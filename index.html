@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>My Alarms</title>
+<style>
+/* One phone-width column: alarm rows under a sticky header; sheets for the editor and details. */
+:root {
+  --bg: #000000; --surface: #17181b; --raised: #232529; --line: #34373d;
+  --fg: #f4f6fa; --muted: #9097a3; --accent: #3d86f6; --on-accent: #ffffff;
+  --ok: #46c08a; --wait: #f0b23c; --danger: #f2655a;
+  --ui: -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root {
+  --bg: #f3f5f9; --surface: #ffffff; --raised: #e9edf3; --line: #d3d8e0;
+  --fg: #12151a; --muted: #5d6572; --accent: #1f6fe8; --on-accent: #ffffff;
+  --ok: #1d8a5b; --wait: #a86a00; --danger: #c93a30; color-scheme: light } }
+* { box-sizing: border-box }
+[hidden] { display: none !important }
+html { -webkit-text-size-adjust: 100% }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--ui); font-size: 16px; line-height: 1.4 }
+button, input, select { font: inherit; color: inherit }
+button { cursor: pointer }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.wrap { max-width: 520px; margin: 0 auto; padding: env(safe-area-inset-top, 0px) 16px 130px }
+header.top { position: sticky; top: 0; z-index: 5; background: var(--bg);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-block: 14px }
+header.top h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.01em }
+.btn { display: inline-block; border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 600; background: var(--raised); color: var(--fg); text-decoration: none }
+.btn.primary { background: var(--accent); color: var(--on-accent) }
+.btn.ghost { background: transparent; color: var(--accent); padding-inline: 6px }
+.btn.danger { background: transparent; color: var(--danger); padding-inline: 6px }
+.note { background: var(--surface); border-radius: 12px; padding: 14px 16px; color: var(--muted); font-size: 15px }
+.note b { color: var(--fg) }
+h2.sec { margin: 26px 0 8px; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted) }
+.rows { display: flex; flex-direction: column; background: var(--surface); border-radius: 14px; overflow: hidden }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; width: 100%; text-align: left;
+  background: transparent; border: 0; border-top: 1px solid var(--line); padding: 13px 16px }
+.row:first-child { border-top: 0 }
+.row .time { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em }
+.row .time small { display: block; font-size: 14px; font-weight: 500; color: var(--muted); letter-spacing: 0 }
+.row .title { grid-column: 1; font-weight: 500; min-width: 0; overflow-wrap: anywhere }
+.row .when { grid-column: 1; color: var(--muted); font-size: 14px }
+.pill { grid-row: 1 / span 3; grid-column: 2; font-size: 12px; font-weight: 600; border-radius: 99px; padding: 4px 10px;
+  border: 1px solid currentColor; white-space: nowrap }
+.pill.live { color: var(--ok) } .pill.pending { color: var(--wait) } .pill.builtin { color: var(--muted) }
+.sendbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--surface); border-top: 1px solid var(--line);
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)) }
+.sendbar .in { max-width: 488px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px }
+.sendbar span { font-size: 15px; min-width: 0 }
+.sheet { position: fixed; inset: 0; z-index: 10; background: var(--bg); overflow-y: auto;
+  padding: calc(env(safe-area-inset-top, 0px) + 6px) 16px calc(env(safe-area-inset-bottom, 0px) + 32px) }
+.sheet .in { max-width: 488px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px }
+.sheet .bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-block: 8px }
+.sheet .bar h2 { margin: 0; font-size: 19px; font-weight: 700; text-align: center; flex: 1; min-width: 0 }
+.field { display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--line); padding-bottom: 8px }
+.field > label, .field > .lab { color: var(--muted); font-size: 14px }
+.field input[type=text], .field input[type=time], .field input[type=date], .field input[type=number], .field select {
+  background: transparent; border: 0; padding: 4px 0; font-size: 19px; width: 100%; min-width: 0 }
+.big { font-size: 19px; font-variant-numeric: tabular-nums }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px }
+.seg { display: flex; flex-wrap: wrap; gap: 8px; padding-block: 4px }
+.seg button { border: 1px solid var(--line); background: transparent; border-radius: 99px; padding: 7px 14px; font-weight: 500 }
+.seg button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--on-accent) }
+.check { display: flex; align-items: center; gap: 10px; font-size: 17px }
+.check input { width: 22px; height: 22px; accent-color: var(--accent) }
+.preview { color: var(--muted); font-size: 15px; margin: 0 }
+.err { color: var(--danger); font-size: 15px }
+ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-variant-numeric: tabular-nums }
+.spacer { width: 56px }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Alarms</h1>
+    <button class="btn primary" id="btn-new" type="button">+ New alarm</button>
+  </header>
+  <div id="status" class="note" hidden></div>
+  <div id="list"></div>
+</div>
+
+<div class="sendbar" id="sendbar" hidden>
+  <div class="in"><span id="sendbar-text"></span><a class="btn primary" id="btn-send" href="#">Save to Clock</a></div>
+</div>
+
+<div class="sheet" id="sheet-edit" hidden>
+  <div class="in">
+    <div class="bar"><button class="btn ghost" id="edit-cancel" type="button">Cancel</button><h2>New alarm</h2><button class="btn ghost" id="edit-save" type="button">Add</button></div>
+    <div class="field"><label for="f-title">Title</label><input id="f-title" type="text" maxlength="80" placeholder="Drink water" autocomplete="off"></div>
+    <div class="field"><label for="f-time">Time</label><input id="f-time" type="time" value="09:00"></div>
+    <div class="field"><span class="lab">Repeat</span>
+      <div class="seg" id="f-repeat">
+        <button type="button" data-v="once">Once</button><button type="button" data-v="daily">Every day</button>
+        <button type="button" data-v="weekly">Weekly</button><button type="button" data-v="monthly">Monthly</button>
+        <button type="button" data-v="yearly">Yearly</button>
+      </div>
+    </div>
+    <div class="field" id="box-once"><label for="f-date">Date</label><input id="f-date" type="date"></div>
+    <div class="field" id="box-weekly" hidden><span class="lab">On these days</span><div class="seg" id="f-days"></div></div>
+    <div class="field" id="box-monthly" hidden><label for="f-dom">Day of the month (1 to 31)</label><input id="f-dom" type="number" min="1" max="31" value="1" inputmode="numeric"></div>
+    <div class="pair" id="box-yearly" hidden>
+      <div class="field"><label for="f-month">Month</label><select id="f-month"></select></div>
+      <div class="field"><label for="f-day">Day</label><input id="f-day" type="number" min="1" max="31" value="1" inputmode="numeric"></div>
+    </div>
+    <label class="check"><input id="f-burst" type="checkbox"> Ring again until I do it</label>
+    <div class="pair" id="box-burst" hidden>
+      <div class="field"><label for="f-every">Every (minutes)</label><input id="f-every" type="number" min="1" max="720" value="10" inputmode="numeric"></div>
+      <div class="field"><label for="f-until">Until</label><input id="f-until" type="time" value="10:00"></div>
+    </div>
+    <p class="preview" id="f-preview"></p>
+    <div class="err" id="f-err" hidden></div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet-view" hidden>
+  <div class="in">
+    <div class="bar"><button class="btn ghost" id="view-close" type="button">Back</button><h2 id="view-title"></h2><span class="spacer"></span></div>
+    <div class="field"><span class="lab">Rings at</span><div class="big" id="view-times"></div></div>
+    <div class="field"><span class="lab">Repeat</span><div class="big" id="view-when"></div></div>
+    <div class="field"><span class="lab">Status</span><div id="view-status"></div></div>
+    <div id="view-actions"></div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet-removed" hidden>
+  <div class="in">
+    <div class="bar"><span class="spacer"></span><h2>Now delete it in Clock</h2><span class="spacer"></span></div>
+    <p class="preview">This list can add alarms to the Clock app but cannot remove them. Open Clock, go to Alarms, and swipe left on each of these:</p>
+    <ul class="plain" id="removed-list"></ul>
+    <button class="btn primary" id="removed-ok" type="button">Done</button>
+  </div>
+</div>
+
+<div class="sheet" id="sheet-sent" hidden>
+  <div class="in">
+    <div class="bar"><span class="spacer"></span><h2>Sent to Shortcuts</h2><span class="spacer"></span></div>
+    <p class="preview">If Safari asks, tap Open. The shortcut saves your changes and opens a fresh copy of this list. This tab is now out of date, so you can close it.</p>
+    <p class="preview">Nothing happened? Open the Shortcuts app and run My Alarms again, then redo the change.</p>
+  </div>
+</div>
+
+<script>
+var SHORTCUT = "My Alarms";
+var DAYS = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
+var DAY_SHORT = {monday:"Mon",tuesday:"Tue",wednesday:"Wed",thursday:"Thu",friday:"Fri",saturday:"Sat",sunday:"Sun"};
+var MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+function $(id) { return document.getElementById(id); }
+function pad(n) { return String(n).padStart(2, "0"); }
+function clean(s) { return String(s).replace(/[|<>\r\n]+/g, " ").replace(/\s+/g, " ").trim(); }
+function toMin(t) { var p = t.split(":").map(Number); return p[0] * 60 + p[1]; }
+function fromMin(m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
+function todayISO() { var d = new Date(); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+function nowMin() { var d = new Date(); return d.getHours() * 60 + d.getMinutes(); }
+function fmt12(t) { var p = t.split(":").map(Number), h = p[0], ap = h < 12 ? "AM" : "PM"; h = h % 12 || 12; return h + ":" + pad(p[1]) + " " + ap; }
+function ordinal(n) { var s = ["th","st","nd","rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+
+/* ---- pure logic ---- */
+function burstTimes(start, every, until) {
+  var out = [], a = toMin(start), b = Math.max(a, toMin(until));
+  for (var m = a; m <= b && out.length < 40; m += every) out.push(fromMin(m));
+  return out;
+}
+function describe(e) {
+  if (e.repeat === "daily") return "Every day";
+  if (e.repeat === "weekly") {
+    var d = DAYS.filter(function (x) { return (e.days || []).indexOf(x) >= 0; });
+    if (d.length === 7) return "Every day";
+    if (d.length === 6 && d.indexOf("sunday") < 0) return "Mon to Sat";
+    if (d.length === 5 && d.indexOf("sunday") < 0 && d.indexOf("saturday") < 0) return "Mon to Fri";
+    return "Every " + d.map(function (x) { return DAY_SHORT[x]; }).join(", ");
+  }
+  if (e.repeat === "monthly") return "Monthly, on the " + ordinal(e.dom);
+  if (e.repeat === "yearly") return "Yearly, " + MONTHS[e.month - 1] + " " + e.day;
+  return "Once, " + (e.date === todayISO() ? "today" : new Date(e.date + "T12:00:00").toLocaleDateString(undefined, {weekday:"short", month:"short", day:"numeric", year:"numeric"}));
+}
+function isDated(e) { return e.repeat === "monthly" || e.repeat === "yearly" || (e.repeat === "once" && e.date > todayISO()); }
+function datedLines(list) {
+  var out = [];
+  list.forEach(function (e) {
+    if (e.status === "builtin" || !isDated(e)) return;
+    var key = e.repeat === "monthly" ? "M" + pad(e.dom) : e.repeat === "yearly" ? "Y" + pad(e.month) + pad(e.day) : "D" + e.date.replace(/-/g, "");
+    e.times.forEach(function (t) { out.push(key + "|" + t + "|" + clean(e.title)); });
+  });
+  return out.sort();
+}
+function clockLines(list) {
+  var out = [];
+  list.forEach(function (e) {
+    if (e.status !== "pending" || isDated(e)) return;
+    var days = e.repeat === "daily" ? DAYS : e.repeat === "weekly" ? DAYS.filter(function (d) { return e.days.indexOf(d) >= 0; }) : null;
+    e.times.forEach(function (t) { out.push(days ? "A|" + t + "|" + clean(e.title) + "|" + days.join(",") : "O|" + t + "|" + clean(e.title)); });
+  });
+  return out;
+}
+function buildPayload(list) {
+  var saved = list.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; return c; });
+  return ["GALARM1"].concat(clockLines(list), ["GALARM-DATED-BEGIN"], datedLines(list), ["GALARM-DATED-END", "GALARM-STATE-BEGIN",
+    JSON.stringify({ v: 1, entries: saved }), "GALARM-STATE-END"]).join("\n");
+}
+function parseSaved(raw) {
+  var m = /GALARM-STATE-BEGIN\s*([\s\S]*?)\s*GALARM-STATE-END/.exec(raw || "");
+  if (!m) return null;
+  var s = JSON.parse(m[1]);
+  if (!s || !Array.isArray(s.entries)) throw new Error("bad state");
+  return s.entries;
+}
+
+/* ---- state: this page stores nothing. The My Alarms shortcut hands the list in after the # of
+   the address (which never leaves the phone): the starting list, plus the saved list if there is one. ---- */
+var entries = [], changed = false, broken = false, locked = false, loaded = false;
+function readHash() {
+  var h = location.hash.slice(1); if (!h) return null;
+  try { h = decodeURIComponent(h); } catch (err) {}
+  var bin = atob(h.replace(/-/g, "+").replace(/_/g, "/")), bytes = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function load() {
+  var raw = null, saved = null, seed = null;
+  try { raw = readHash(); } catch (err) { raw = null; }
+  if (raw == null) return;
+  try { history.replaceState(null, "", location.pathname); } catch (err) {}
+  var m = /GALARM-SEED-BEGIN\s*([\s\S]*?)\s*GALARM-SEED-END/.exec(raw);
+  try { seed = JSON.parse(m[1]); } catch (err) { return; }
+  try { saved = parseSaved(raw.slice(m.index + m[0].length)); } catch (err) { broken = true; }
+  entries = saved || seed; loaded = true;
+  var today = todayISO(), before = entries.length;
+  entries = entries.filter(function (e) { return !(e.repeat === "once" && e.date < today); });
+  entries.forEach(function (e, i) { if (!e.id) e.id = "s" + i; });
+  if (entries.length !== before) changed = true;
+}
+
+/* ---- list ---- */
+var SECTIONS = [["daily","Every day"],["weekly","Weekly"],["monthly","Monthly"],["yearly","Yearly"],["once","One time"]];
+var PILL = { live: "In Clock", pending: "Not saved yet", builtin: "Built in" };
+function sectionOf(e) { return e.repeat === "weekly" && (e.days || []).length === 7 ? "daily" : e.repeat; }
+function sortKey(e) {
+  var t = e.times[0];
+  if (e.repeat === "yearly") return pad(e.month) + pad(e.day) + t;
+  if (e.repeat === "monthly") return pad(e.dom) + t;
+  if (e.repeat === "once") return e.date + t;
+  return t;
+}
+function el(tag, cls, text) { var x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; }
+function refresh() {
+  var box = $("list"); box.textContent = "";
+  var st = $("status");
+  $("btn-new").hidden = !loaded;
+  if (!loaded) { st.innerHTML = "<b>Open this page with the My Alarms shortcut.</b> Your alarm list is kept on your iPhone, and the shortcut brings it here. Opened on its own, this page has nothing to show."; st.hidden = false; $("sendbar").hidden = true; return; }
+  if (broken) { st.innerHTML = "<b>Your saved list could not be read</b>, so this is the original list. Alarms you added before may be missing here, but they are still in Clock."; st.hidden = false; }
+  else if (!entries.length) { st.innerHTML = "No alarms yet. Tap <b>+ New alarm</b> to add your first one."; st.hidden = false; }
+  else st.hidden = true;
+  SECTIONS.forEach(function (sec) {
+    var items = entries.filter(function (e) { return sectionOf(e) === sec[0]; }).sort(function (a, b) { return sortKey(a) < sortKey(b) ? -1 : 1; });
+    if (!items.length) return;
+    box.append(el("h2", "sec", sec[1] + " · " + items.length));
+    var rows = el("div", "rows");
+    items.forEach(function (e) {
+      var b = el("button", "row"); b.type = "button";
+      var time = el("div", "time", fmt12(e.times[0]));
+      if (e.times.length > 1) time.append(el("small", "", "to " + fmt12(e.times[e.times.length - 1]) + " · " + e.times.length + " alarms"));
+      b.append(time, el("span", "pill " + e.status, PILL[e.status] || e.status), el("div", "title", e.title), el("div", "when", describe(e)));
+      b.addEventListener("click", function () { openView(e.id); }); rows.append(b);
+    });
+    box.append(rows);
+  });
+  var pending = entries.filter(function (e) { return e.status === "pending"; }).length;
+  var dirty = changed || pending > 0;
+  $("sendbar").hidden = !dirty;
+  if (dirty) {
+    $("sendbar-text").textContent = pending ? pending + (pending === 1 ? " new alarm" : " new alarms") + " to save" : "Changes to save";
+    $("btn-send").href = "shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT) + "&input=text&text=" + encodeURIComponent(buildPayload(entries));
+  }
+}
+
+/* ---- detail ---- */
+var viewing = null;
+function openView(id) {
+  var e = entries.filter(function (x) { return x.id === id; })[0]; if (!e) return; viewing = e;
+  $("view-title").textContent = e.title;
+  $("view-times").textContent = e.times.map(fmt12).join(", ");
+  $("view-when").textContent = describe(e);
+  $("view-status").textContent = e.status === "builtin" ? "Built into the nightly shortcut. It cannot be changed here."
+    : e.status === "pending" ? "Not saved yet. Tap Save to Clock on the main screen."
+    : isDated(e) ? "Scheduled. The nightly shortcut adds it to Clock on the day." : "In the Clock app.";
+  var act = $("view-actions"); act.textContent = "";
+  if (e.status !== "builtin") { var b = el("button", "btn danger", "Delete alarm"); b.type = "button"; b.addEventListener("click", removeViewing); act.append(b); }
+  $("sheet-view").hidden = false;
+}
+function removeViewing() {
+  var e = viewing; if (!e) return;
+  var wasPending = e.status === "pending", inClock = e.status === "live" && !isDated(e);
+  entries = entries.filter(function (x) { return x.id !== e.id; });
+  if (!wasPending) changed = true;
+  $("sheet-view").hidden = true;
+  if (inClock) {
+    var ul = $("removed-list"); ul.textContent = "";
+    e.times.forEach(function (t) { ul.append(el("li", "", fmt12(t) + "  " + e.title)); });
+    $("sheet-removed").hidden = false;
+  }
+  refresh();
+}
+
+/* ---- editor ---- */
+var form = { repeat: "once", days: {} };
+function setRepeat(v) {
+  form.repeat = v;
+  Array.prototype.forEach.call($("f-repeat").children, function (b) { b.setAttribute("aria-pressed", String(b.dataset.v === v)); });
+  $("box-once").hidden = v !== "once"; $("box-weekly").hidden = v !== "weekly";
+  $("box-monthly").hidden = v !== "monthly"; $("box-yearly").hidden = v !== "yearly";
+  updatePreview();
+}
+function readForm() {
+  var title = clean($("f-title").value), time = $("f-time").value;
+  if (!title) return { error: "Give the alarm a title. It is the text that fills the screen." };
+  if (!time) return { error: "Pick a time." };
+  var times = [time];
+  if ($("f-burst").checked) {
+    var every = Number($("f-every").value), until = $("f-until").value;
+    if (!(every >= 1 && every <= 720)) return { error: "Minutes between rings must be from 1 to 720." };
+    if (!until || toMin(until) < toMin(time)) return { error: "The “until” time must be later than the first time, on the same day." };
+    times = burstTimes(time, every, until);
+    if (times.length > 30) return { error: "That makes more than 30 alarms. Use a longer gap or an earlier end time." };
+  }
+  var e = { id: "e" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), title: title, repeat: form.repeat, times: times, status: "pending" };
+  if (form.repeat === "weekly") {
+    e.days = DAYS.filter(function (d) { return form.days[d]; });
+    if (!e.days.length) return { error: "Pick at least one day." };
+    if (e.days.length === 7) { e.repeat = "daily"; delete e.days; }
+  } else if (form.repeat === "monthly") {
+    e.dom = Number($("f-dom").value);
+    if (!(Number.isInteger(e.dom) && e.dom >= 1 && e.dom <= 31)) return { error: "Day of the month must be from 1 to 31." };
+  } else if (form.repeat === "yearly") {
+    e.month = Number($("f-month").value); e.day = Number($("f-day").value);
+    var max = new Date(2024, e.month, 0).getDate();
+    if (!(Number.isInteger(e.day) && e.day >= 1 && e.day <= max)) return { error: MONTHS[e.month - 1] + " has days 1 to " + max + "." };
+  } else {
+    e.date = $("f-date").value;
+    if (!e.date || e.date < todayISO()) return { error: "Pick today or a later date." };
+    if (e.date === todayISO() && toMin(times[0]) <= nowMin()) return { error: "That time has already passed today. Pick a later time or another date." };
+  }
+  return { entry: e };
+}
+function updatePreview() {
+  $("box-burst").hidden = !$("f-burst").checked;
+  var r = readForm();
+  $("f-preview").textContent = r.entry ? describe(r.entry) + " · " + (r.entry.times.length === 1 ? "1 alarm at " + fmt12(r.entry.times[0]) : r.entry.times.length + " alarms: " + r.entry.times.map(fmt12).join(", ")) : "";
+  $("f-err").hidden = true;
+}
+function openEditor() {
+  $("f-title").value = ""; $("f-time").value = "09:00"; $("f-date").value = todayISO(); $("f-date").min = todayISO();
+  $("f-burst").checked = false; $("f-every").value = 10; $("f-until").value = "10:00"; $("f-dom").value = 1; $("f-day").value = 1;
+  form.days = {}; Array.prototype.forEach.call($("f-days").children, function (b) { b.setAttribute("aria-pressed", "false"); });
+  setRepeat("once"); $("sheet-edit").hidden = false;
+}
+function saveEditor() {
+  var r = readForm();
+  if (r.error) { $("f-err").textContent = r.error; $("f-err").hidden = false; return; }
+  entries.push(r.entry); $("sheet-edit").hidden = true; refresh();
+}
+
+/* ---- wiring ---- */
+DAYS.forEach(function (d) {
+  var b = el("button", "", DAY_SHORT[d]); b.type = "button"; b.setAttribute("aria-pressed", "false");
+  b.addEventListener("click", function () { form.days[d] = !form.days[d]; b.setAttribute("aria-pressed", String(!!form.days[d])); updatePreview(); });
+  $("f-days").append(b);
+});
+MONTHS.forEach(function (m, i) { var o = el("option", "", m); o.value = i + 1; $("f-month").append(o); });
+Array.prototype.forEach.call($("f-repeat").children, function (b) { b.addEventListener("click", function () { setRepeat(b.dataset.v); }); });
+["f-title","f-time","f-date","f-dom","f-month","f-day","f-burst","f-every","f-until"].forEach(function (id) { $(id).addEventListener("input", updatePreview); });
+$("btn-new").addEventListener("click", openEditor);
+$("edit-cancel").addEventListener("click", function () { $("sheet-edit").hidden = true; });
+$("edit-save").addEventListener("click", saveEditor);
+$("view-close").addEventListener("click", function () { $("sheet-view").hidden = true; });
+$("removed-ok").addEventListener("click", function () { $("sheet-removed").hidden = true; });
+$("btn-send").addEventListener("click", function (ev) {
+  if (locked) { ev.preventDefault(); return; }
+  locked = true; setTimeout(function () { $("sheet-sent").hidden = false; }, 600);
+});
+load(); refresh();
+</script>
+</body>
+</html>
