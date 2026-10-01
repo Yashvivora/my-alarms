@@ -105,9 +105,14 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
       <div class="field"><label for="f-month">Month</label><select id="f-month"></select></div>
       <div class="field"><label for="f-day">Day</label><input id="f-day" type="number" min="1" max="31" value="1" inputmode="numeric"></div>
     </div>
-    <label class="check"><input id="f-burst" type="checkbox"> Ring again until I do it</label>
+    <div class="field"><span class="lab">How often on that day</span>
+      <div class="seg" id="f-freq">
+        <button type="button" data-v="none">Just once</button><button type="button" data-v="min">Every few minutes</button>
+        <button type="button" data-v="hour">Hourly</button>
+      </div>
+    </div>
     <div class="pair" id="box-burst" hidden>
-      <div class="field"><label for="f-every">Every (minutes)</label><input id="f-every" type="number" min="1" max="720" value="10" inputmode="numeric"></div>
+      <div class="field"><label for="f-every" id="f-every-lab">Every (minutes)</label><input id="f-every" type="number" min="1" max="720" value="5" inputmode="numeric"></div>
       <div class="field"><label for="f-until">Until</label><input id="f-until" type="time" value="10:00"></div>
     </div>
     <p class="preview" id="f-preview"></p>
@@ -160,8 +165,15 @@ function ordinal(n) { var s = ["th","st","nd","rd"], v = n % 100; return n + (s[
 /* ---- pure logic ---- */
 function burstTimes(start, every, until) {
   var out = [], a = toMin(start), b = Math.max(a, toMin(until));
-  for (var m = a; m <= b && out.length < 40; m += every) out.push(fromMin(m));
+  for (var m = a; m <= b && out.length < 80; m += every) out.push(fromMin(m));
   return out;
+}
+function gapText(times) {
+  if (times.length < 2) return "";
+  var g = toMin(times[1]) - toMin(times[0]);
+  for (var i = 2; i < times.length; i++) if (toMin(times[i]) - toMin(times[i - 1]) !== g) return "";
+  if (g % 60 === 0) return g === 60 ? "every hour" : "every " + g / 60 + " hours";
+  return "every " + g + " min";
 }
 function describe(e) {
   if (e.repeat === "daily") return "Every day";
@@ -262,7 +274,7 @@ function refresh() {
     items.forEach(function (e) {
       var b = el("button", "row"); b.type = "button";
       var time = el("div", "time", fmt12(e.times[0]));
-      if (e.times.length > 1) time.append(el("small", "", "to " + fmt12(e.times[e.times.length - 1]) + " · " + e.times.length + " alarms"));
+      if (e.times.length > 1) time.append(el("small", "", "to " + fmt12(e.times[e.times.length - 1]) + " · " + (gapText(e.times) || e.times.length + " alarms")));
       b.append(time, el("span", "pill " + e.status, PILL[e.status] || e.status), el("div", "title", e.title), el("div", "when", describe(e)));
       b.addEventListener("click", function () { openView(e.id); }); rows.append(b);
     });
@@ -306,7 +318,15 @@ function removeViewing() {
 }
 
 /* ---- editor ---- */
-var form = { repeat: "once", days: {} };
+var form = { repeat: "once", days: {}, freq: "none" };
+function setFreq(v) {
+  form.freq = v;
+  Array.prototype.forEach.call($("f-freq").children, function (b) { b.setAttribute("aria-pressed", String(b.dataset.v === v)); });
+  $("f-every-lab").textContent = v === "hour" ? "Every (hours)" : "Every (minutes)";
+  $("f-every").value = v === "hour" ? 1 : 5;
+  if (v !== "none" && $("f-time").value) $("f-until").value = fromMin(Math.min(toMin($("f-time").value) + (v === "hour" ? 180 : 60), 23 * 60 + 59));
+  updatePreview();
+}
 function setRepeat(v) {
   form.repeat = v;
   Array.prototype.forEach.call($("f-repeat").children, function (b) { b.setAttribute("aria-pressed", String(b.dataset.v === v)); });
@@ -319,12 +339,13 @@ function readForm() {
   if (!title) return { error: "Give the alarm a title. It is the text that fills the screen." };
   if (!time) return { error: "Pick a time." };
   var times = [time];
-  if ($("f-burst").checked) {
-    var every = Number($("f-every").value), until = $("f-until").value;
-    if (!(every >= 1 && every <= 720)) return { error: "Minutes between rings must be from 1 to 720." };
+  if (form.freq !== "none") {
+    var unit = form.freq === "hour" ? 60 : 1, n = Number($("f-every").value), every = n * unit, until = $("f-until").value;
+    if (!(Number.isInteger(n) && n >= 1)) return { error: form.freq === "hour" ? "Enter how many hours between rings, for example 1." : "Enter how many minutes between rings, for example 5." };
+    if (every > 720) return { error: "The gap between rings must be 12 hours or less." };
     if (!until || toMin(until) < toMin(time)) return { error: "The “until” time must be later than the first time, on the same day." };
     times = burstTimes(time, every, until);
-    if (times.length > 30) return { error: "That makes more than 30 alarms. Use a longer gap or an earlier end time." };
+    if (times.length > 60) return { error: "That makes more than 60 alarms. Use a longer gap or an earlier end time." };
   }
   var e = { id: "e" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36), title: title, repeat: form.repeat, times: times, status: "pending" };
   if (form.repeat === "weekly") {
@@ -338,7 +359,7 @@ function readForm() {
     e.month = Number($("f-month").value); e.day = Number($("f-day").value);
     var max = new Date(2024, e.month, 0).getDate();
     if (!(Number.isInteger(e.day) && e.day >= 1 && e.day <= max)) return { error: MONTHS[e.month - 1] + " has days 1 to " + max + "." };
-  } else {
+  } else if (form.repeat === "once") {
     e.date = $("f-date").value;
     if (!e.date || e.date < todayISO()) return { error: "Pick today or a later date." };
     if (e.date === todayISO() && toMin(times[0]) <= nowMin()) return { error: "That time has already passed today. Pick a later time or another date." };
@@ -346,14 +367,14 @@ function readForm() {
   return { entry: e };
 }
 function updatePreview() {
-  $("box-burst").hidden = !$("f-burst").checked;
+  $("box-burst").hidden = form.freq === "none";
   var r = readForm();
   $("f-preview").textContent = r.entry ? describe(r.entry) + " · " + (r.entry.times.length === 1 ? "1 alarm at " + fmt12(r.entry.times[0]) : r.entry.times.length + " alarms: " + r.entry.times.map(fmt12).join(", ")) : "";
   $("f-err").hidden = true;
 }
 function openEditor() {
   $("f-title").value = ""; $("f-time").value = "09:00"; $("f-date").value = todayISO(); $("f-date").min = todayISO();
-  $("f-burst").checked = false; $("f-every").value = 10; $("f-until").value = "10:00"; $("f-dom").value = 1; $("f-day").value = 1;
+  setFreq("none"); $("f-until").value = "10:00"; $("f-dom").value = 1; $("f-day").value = 1;
   form.days = {}; Array.prototype.forEach.call($("f-days").children, function (b) { b.setAttribute("aria-pressed", "false"); });
   setRepeat("once"); $("sheet-edit").hidden = false;
 }
@@ -371,7 +392,8 @@ DAYS.forEach(function (d) {
 });
 MONTHS.forEach(function (m, i) { var o = el("option", "", m); o.value = i + 1; $("f-month").append(o); });
 Array.prototype.forEach.call($("f-repeat").children, function (b) { b.addEventListener("click", function () { setRepeat(b.dataset.v); }); });
-["f-title","f-time","f-date","f-dom","f-month","f-day","f-burst","f-every","f-until"].forEach(function (id) { $(id).addEventListener("input", updatePreview); });
+Array.prototype.forEach.call($("f-freq").children, function (b) { b.addEventListener("click", function () { setFreq(b.dataset.v); }); });
+["f-title","f-time","f-date","f-dom","f-month","f-day","f-every","f-until"].forEach(function (id) { $(id).addEventListener("input", updatePreview); });
 $("btn-new").addEventListener("click", openEditor);
 $("edit-cancel").addEventListener("click", function () { $("sheet-edit").hidden = true; });
 $("edit-save").addEventListener("click", saveEditor);
