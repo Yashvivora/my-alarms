@@ -223,6 +223,7 @@ function load() {
   try { raw = readHash(); } catch (err) { raw = null; }
   if (raw == null) return;
   try { history.replaceState(null, "", location.pathname); } catch (err) {}
+  var nm = /^GALARM-NAME:(.+)$/m.exec(raw); if (nm) SHORTCUT = nm[1].trim();
   var m = /GALARM-SEED-BEGIN\s*([\s\S]*?)\s*GALARM-SEED-END/.exec(raw);
   try { seed = JSON.parse(m[1]); } catch (err) { return; }
   try { saved = parseSaved(raw.slice(m.index + m[0].length)); } catch (err) { broken = true; }
