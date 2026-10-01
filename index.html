@@ -70,6 +70,19 @@ h2.sec { margin: 26px 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 
 .err { color: var(--danger); font-size: 15px }
 ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-variant-numeric: tabular-nums }
 .spacer { width: 56px }
+/* Full-screen "alarm ringing" view, opened by the Alarm Full Screen shortcut. Always dark red so it reads as an alarm. */
+.ring { position: fixed; inset: 0; z-index: 20; background: #7a0d12; color: #ffffff; overflow-y: auto;
+  display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 22px;
+  padding: calc(env(safe-area-inset-top, 0px) + 24px) 20px calc(env(safe-area-inset-bottom, 0px) + 24px) }
+.ring.flash { animation: ringflash 1s steps(1) infinite }
+@keyframes ringflash { 50% { background: #c4141c } }
+@media (prefers-reduced-motion: reduce) { .ring.flash { animation: none } }
+.ring .clock { font-size: 76px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.02em }
+.ring .day { font-size: 18px; opacity: .85 }
+.ring .what { font-size: 40px; font-weight: 700; line-height: 1.15; overflow-wrap: anywhere; max-width: 520px }
+.ring .what div + div { margin-top: 10px }
+.ring .hint { font-size: 16px; opacity: .85; max-width: 420px; margin: 0 }
+.ring .btn { background: #ffffff; color: #7a0d12; font-size: 17px; padding: 12px 22px }
 </style>
 </head>
 <body>
@@ -137,6 +150,14 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
     <ul class="plain" id="removed-list"></ul>
     <button class="btn primary" id="removed-ok" type="button">Done</button>
   </div>
+</div>
+
+<div class="ring" id="sheet-ring" role="alertdialog" aria-labelledby="ring-what" hidden>
+  <div class="clock" id="ring-clock"></div>
+  <div class="day" id="ring-day"></div>
+  <div class="what" id="ring-what"></div>
+  <p class="hint" id="ring-hint">Stop or snooze the alarm with the banner at the top of the screen.</p>
+  <button class="btn" id="ring-done" type="button">Done</button>
 </div>
 
 <div class="sheet" id="sheet-sent" hidden>
@@ -234,6 +255,19 @@ function readHash() {
   for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new TextDecoder().decode(bytes);
 }
+/* Lists saved before 2026-10-02 joined two alarms into "Take medicines + Breakfast" (11:30) and
+   "Dinner + Take medicines" (19:00). GAlarm keeps them apart, so swap the old every-day and
+   weekly starting alarms for the current ones from the seed; anything added by hand stays. */
+var MERGED = ["Take medicines + Breakfast", "Dinner + Take medicines"];
+function unmerge(saved, seed) {
+  if (!saved.some(function (e) { return MERGED.indexOf(e.title) >= 0; })) return saved;
+  var base = seed.filter(function (e) { return e.repeat === "daily" || e.repeat === "weekly"; });
+  var titles = MERGED.concat(base.map(function (e) { return e.title; }));
+  return base.map(function (e) { return Object.assign({}, e); }).concat(saved.filter(function (e) {
+    return !((e.repeat === "daily" || e.repeat === "weekly") && e.status === "live" && titles.indexOf(e.title) >= 0);
+  }));
+}
+var ringing = false;
 function load() {
   var raw = null, saved = null, seed = null;
   try { raw = readHash(); } catch (err) { raw = null; }
@@ -241,10 +275,11 @@ function load() {
   try { history.replaceState(null, "", location.pathname); } catch (err) {}
   var nm = /^GALARM-NAME:(.+)$/m.exec(raw); if (nm) SHORTCUT = nm[1].trim();
   var vm = /^GALARM-V:(\d+)$/m.exec(raw); fullList = !!vm && Number(vm[1]) >= 2;
+  ringing = /^GALARM-RING$/m.test(raw);
   var m = /GALARM-SEED-BEGIN\s*([\s\S]*?)\s*GALARM-SEED-END/.exec(raw);
   try { seed = JSON.parse(m[1]); } catch (err) { return; }
   try { saved = parseSaved(raw.slice(m.index + m[0].length)); } catch (err) { broken = true; }
-  entries = saved || seed; loaded = true;
+  entries = saved ? unmerge(saved, seed) : seed; loaded = true;
   if (fullList) entries.forEach(function (e) { if (e.status === "builtin") e.status = "live"; });
   var today = todayISO(), before = entries.length;
   entries = entries.filter(function (e) { return !(e.repeat === "once" && e.date < today); });
@@ -444,7 +479,44 @@ $("btn-send").addEventListener("click", function (ev) {
   if (locked) { ev.preventDefault(); return; }
   locked = true; setTimeout(function () { $("sheet-sent").hidden = false; }, 600);
 });
+/* ---- ringing view ---- */
+function appliesOn(e, d) {
+  if (e.repeat === "daily") return true;
+  if (e.repeat === "weekly") return (e.days || []).indexOf(DAYS[(d.getDay() + 6) % 7]) >= 0;
+  if (e.repeat === "monthly") return e.dom === d.getDate();
+  if (e.repeat === "yearly") return e.month === d.getMonth() + 1 && e.day === d.getDate();
+  return e.date === todayISO();
+}
+/* Which alarm is ringing: one due this minute (or just before). Failing that, the latest one in
+   the past hour, which is a snoozed alarm ringing again. */
+function ringingNow() {
+  var d = new Date(), now = d.getHours() * 60 + d.getMinutes(), due = [], late = null, lateGap = 61;
+  entries.forEach(function (e) {
+    if (!appliesOn(e, d)) return;
+    e.times.forEach(function (t) {
+      var gap = now - toMin(t);
+      if (gap >= -1 && gap <= 2) { if (due.indexOf(e.title) < 0) due.push(e.title); }
+      else if (gap > 2 && gap < lateGap) { lateGap = gap; late = e.title; }
+    });
+  });
+  return due.length ? { titles: due } : late ? { titles: [late], snoozed: true } : { titles: ["Alarm"] };
+}
+function tickRing() {
+  var d = new Date();
+  $("ring-clock").textContent = fmt12(pad(d.getHours()) + ":" + pad(d.getMinutes()));
+  $("ring-day").textContent = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+}
+function showRing() {
+  var r = ringingNow(), box = $("ring-what"); box.textContent = "";
+  r.titles.forEach(function (t) { box.append(el("div", "", t)); });
+  if (r.snoozed) $("ring-hint").textContent = "Snoozed alarm. Stop it with the banner at the top of the screen.";
+  document.title = r.titles.join(" · ");
+  tickRing(); setInterval(tickRing, 1000);
+  $("sheet-ring").classList.add("flash"); $("sheet-ring").hidden = false;
+}
+$("ring-done").addEventListener("click", function () { $("sheet-ring").hidden = true; document.title = "My Alarms"; });
 load(); refresh();
+if (ringing && loaded) showRing();
 </script>
 </body>
 </html>
