@@ -210,7 +210,7 @@ function clockLines(list) {
 }
 function buildPayload(list) {
   var saved = list.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; delete c.skip; return c; });
-  return ["GALARM1"].concat(clockLines(list), ["GALARM-DATED-BEGIN"], datedLines(list), ["GALARM-DATED-END", "GALARM-STATE-BEGIN",
+  return ["GALARM1"].concat(clockLines(list), [fullList ? "GALARM-DATED-BEGIN-V2" : "GALARM-DATED-BEGIN"], datedLines(list), ["GALARM-DATED-END", "GALARM-STATE-BEGIN",
     JSON.stringify({ v: 1, entries: saved }), "GALARM-STATE-END"]).join("\n");
 }
 function parseSaved(raw) {
@@ -224,6 +224,9 @@ function parseSaved(raw) {
 /* ---- state: this page stores nothing. The My Alarms shortcut hands the list in after the # of
    the address (which never leaves the phone): the starting list, plus the saved list if there is one. ---- */
 var entries = [], changed = false, broken = false, locked = false, loaded = false;
+/* With the second version of the shortcuts the saved list holds every dated alarm, so the
+   birthdays and monthly ones that used to be fixed inside the nightly shortcut are editable. */
+var fullList = false;
 function readHash() {
   var h = location.hash.slice(1); if (!h) return null;
   try { h = decodeURIComponent(h); } catch (err) {}
@@ -237,10 +240,12 @@ function load() {
   if (raw == null) return;
   try { history.replaceState(null, "", location.pathname); } catch (err) {}
   var nm = /^GALARM-NAME:(.+)$/m.exec(raw); if (nm) SHORTCUT = nm[1].trim();
+  var vm = /^GALARM-V:(\d+)$/m.exec(raw); fullList = !!vm && Number(vm[1]) >= 2;
   var m = /GALARM-SEED-BEGIN\s*([\s\S]*?)\s*GALARM-SEED-END/.exec(raw);
   try { seed = JSON.parse(m[1]); } catch (err) { return; }
   try { saved = parseSaved(raw.slice(m.index + m[0].length)); } catch (err) { broken = true; }
   entries = saved || seed; loaded = true;
+  if (fullList) entries.forEach(function (e) { if (e.status === "builtin") e.status = "live"; });
   var today = todayISO(), before = entries.length;
   entries = entries.filter(function (e) { return !(e.repeat === "once" && e.date < today); });
   entries.forEach(function (e, i) { if (!e.id) e.id = "s" + i; });
