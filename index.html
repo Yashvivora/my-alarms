@@ -70,19 +70,22 @@ h2.sec { margin: 26px 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 
 .err { color: var(--danger); font-size: 15px }
 ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-variant-numeric: tabular-nums }
 .spacer { width: 56px }
-/* Full-screen "alarm ringing" view, opened by the Alarm Full Screen shortcut. Always dark red so it reads as an alarm. */
-.ring { position: fixed; inset: 0; z-index: 20; background: #7a0d12; color: #ffffff; overflow-y: auto;
-  display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 22px;
-  padding: calc(env(safe-area-inset-top, 0px) + 24px) 20px calc(env(safe-area-inset-bottom, 0px) + 24px) }
-.ring.flash { animation: ringflash 1s steps(1) infinite }
-@keyframes ringflash { 50% { background: #c4141c } }
-@media (prefers-reduced-motion: reduce) { .ring.flash { animation: none } }
-.ring .clock { font-size: 76px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.02em }
-.ring .day { font-size: 18px; opacity: .85 }
-.ring .what { font-size: 40px; font-weight: 700; line-height: 1.15; overflow-wrap: anywhere; max-width: 520px }
-.ring .what div + div { margin-top: 10px }
-.ring .hint { font-size: 16px; opacity: .85; max-width: 420px; margin: 0 }
-.ring .btn { background: #ffffff; color: #7a0d12; font-size: 17px; padding: 12px 22px }
+/* Full-screen "alarm ringing" view, opened by the Alarm Full Screen shortcut. Laid out like
+   the iPhone's own lock-screen alarm: date, large thin time, alarm title, controls at the bottom. */
+.ring { position: fixed; inset: 0; z-index: 20; color: #ffffff; overflow-y: auto; text-align: center;
+  background: radial-gradient(120% 80% at 50% 0%, #2a2d34 0%, #0b0c0f 55%, #000000 100%);
+  display: flex; flex-direction: column; align-items: center;
+  padding: calc(env(safe-area-inset-top, 0px) + 48px) 20px calc(env(safe-area-inset-bottom, 0px) + 28px);
+  font-family: -apple-system, "SF Pro Display", "Helvetica Neue", Arial, sans-serif }
+.ring .day { font-size: 21px; font-weight: 600; opacity: .9 }
+.ring .clock { font-size: clamp(84px, 27vw, 128px); font-weight: 200; line-height: 1; margin-top: 2px;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.03em }
+.ring .what { font-size: 24px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; max-width: 520px; margin-top: 18px }
+.ring .what div + div { margin-top: 6px }
+.ring .grow { flex: 1 }
+.ring .hint { font-size: 15px; color: rgba(255,255,255,.62); max-width: 380px; margin: 0 0 16px }
+.ring .btn { width: min(100%, 340px); border-radius: 99px; padding: 17px 22px; font-size: 19px; font-weight: 600;
+  background: rgba(255,255,255,.18); color: #ffffff; -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px) }
 </style>
 </head>
 <body>
@@ -153,11 +156,12 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
 </div>
 
 <div class="ring" id="sheet-ring" role="alertdialog" aria-labelledby="ring-what" hidden>
-  <div class="clock" id="ring-clock"></div>
   <div class="day" id="ring-day"></div>
+  <div class="clock" id="ring-clock"></div>
   <div class="what" id="ring-what"></div>
-  <p class="hint" id="ring-hint">Stop or snooze the alarm with the banner at the top of the screen.</p>
-  <button class="btn" id="ring-done" type="button">Done</button>
+  <div class="grow"></div>
+  <p class="hint" id="ring-hint">To stop or snooze, use the alarm banner at the top of the screen.</p>
+  <button class="btn" id="ring-done" type="button">Close</button>
 </div>
 
 <div class="sheet" id="sheet-sent" hidden>
@@ -503,16 +507,16 @@ function ringingNow() {
 }
 function tickRing() {
   var d = new Date();
-  $("ring-clock").textContent = fmt12(pad(d.getHours()) + ":" + pad(d.getMinutes()));
+  $("ring-clock").textContent = (d.getHours() % 12 || 12) + ":" + pad(d.getMinutes());
   $("ring-day").textContent = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 }
 function showRing() {
   var r = ringingNow(), box = $("ring-what"); box.textContent = "";
   r.titles.forEach(function (t) { box.append(el("div", "", t)); });
-  if (r.snoozed) $("ring-hint").textContent = "Snoozed alarm. Stop it with the banner at the top of the screen.";
+  if (r.snoozed) $("ring-hint").textContent = "Snoozed. To stop it, use the alarm banner at the top of the screen.";
   document.title = r.titles.join(" · ");
   tickRing(); setInterval(tickRing, 1000);
-  $("sheet-ring").classList.add("flash"); $("sheet-ring").hidden = false;
+  $("sheet-ring").hidden = false;
 }
 $("ring-done").addEventListener("click", function () { $("sheet-ring").hidden = true; document.title = "My Alarms"; });
 load(); refresh();
