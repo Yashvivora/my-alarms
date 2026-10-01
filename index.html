@@ -88,7 +88,7 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
 
 <div class="sheet" id="sheet-edit" hidden>
   <div class="in">
-    <div class="bar"><button class="btn ghost" id="edit-cancel" type="button">Cancel</button><h2>New alarm</h2><button class="btn ghost" id="edit-save" type="button">Add</button></div>
+    <div class="bar"><button class="btn ghost" id="edit-cancel" type="button">Cancel</button><h2 id="edit-title">New alarm</h2><button class="btn ghost" id="edit-save" type="button">Add</button></div>
     <div class="field"><label for="f-title">Title</label><input id="f-title" type="text" maxlength="80" placeholder="Drink water" autocomplete="off"></div>
     <div class="field"><label for="f-time">Time</label><input id="f-time" type="time" value="09:00"></div>
     <div class="field"><span class="lab">Repeat</span>
@@ -132,7 +132,7 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
 
 <div class="sheet" id="sheet-removed" hidden>
   <div class="in">
-    <div class="bar"><span class="spacer"></span><h2>Now delete it in Clock</h2><span class="spacer"></span></div>
+    <div class="bar"><span class="spacer"></span><h2 id="removed-title">Now delete it in Clock</h2><span class="spacer"></span></div>
     <p class="preview">This list can add alarms to the Clock app but cannot remove them. Open Clock, go to Alarms, and swipe left on each of these:</p>
     <ul class="plain" id="removed-list"></ul>
     <button class="btn primary" id="removed-ok" type="button">Done</button>
@@ -202,13 +202,14 @@ function clockLines(list) {
   var out = [];
   list.forEach(function (e) {
     if (e.status !== "pending" || isDated(e)) return;
+    var skip = e.skip || [];
     var days = e.repeat === "daily" ? DAYS : e.repeat === "weekly" ? DAYS.filter(function (d) { return e.days.indexOf(d) >= 0; }) : null;
-    e.times.forEach(function (t) { out.push(days ? "A|" + t + "|" + clean(e.title) + "|" + days.join(",") : "O|" + t + "|" + clean(e.title)); });
+    e.times.forEach(function (t) { if (skip.indexOf(t) >= 0) return; out.push(days ? "A|" + t + "|" + clean(e.title) + "|" + days.join(",") : "O|" + t + "|" + clean(e.title)); });
   });
   return out;
 }
 function buildPayload(list) {
-  var saved = list.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; return c; });
+  var saved = list.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; delete c.skip; return c; });
   return ["GALARM1"].concat(clockLines(list), ["GALARM-DATED-BEGIN"], datedLines(list), ["GALARM-DATED-END", "GALARM-STATE-BEGIN",
     JSON.stringify({ v: 1, entries: saved }), "GALARM-STATE-END"]).join("\n");
 }
@@ -284,7 +285,7 @@ function refresh() {
   var dirty = changed || pending > 0;
   $("sendbar").hidden = !dirty;
   if (dirty) {
-    $("sendbar-text").textContent = pending ? pending + (pending === 1 ? " new alarm" : " new alarms") + " to save" : "Changes to save";
+    $("sendbar-text").textContent = pending ? pending + (pending === 1 ? " change" : " changes") + " to save" : "Changes to save";
     $("btn-send").href = "shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT) + "&input=text&text=" + encodeURIComponent(buildPayload(entries));
   }
 }
@@ -300,21 +301,30 @@ function openView(id) {
     : e.status === "pending" ? "Not saved yet. Tap Save to Clock on the main screen."
     : isDated(e) ? "Scheduled. The nightly shortcut adds it to Clock on the day." : "In the Clock app.";
   var act = $("view-actions"); act.textContent = "";
-  if (e.status !== "builtin") { var b = el("button", "btn danger", "Delete alarm"); b.type = "button"; b.addEventListener("click", removeViewing); act.append(b); }
+  if (e.status !== "builtin") {
+    var ed = el("button", "btn", "Edit alarm"); ed.type = "button"; ed.addEventListener("click", function () { $("sheet-view").hidden = true; openEditor(e); });
+    var b = el("button", "btn danger", "Delete alarm"); b.type = "button"; b.addEventListener("click", removeViewing);
+    act.append(ed, document.createTextNode(" "), b);
+  }
   $("sheet-view").hidden = false;
 }
 function removeViewing() {
   var e = viewing; if (!e) return;
-  var wasPending = e.status === "pending", inClock = e.status === "live" && !isDated(e);
+  var wasPending = e.status === "pending", gone = clockTimes(e), inClock = gone.length > 0;
   entries = entries.filter(function (x) { return x.id !== e.id; });
-  if (!wasPending) changed = true;
+  if (!wasPending || inClock) changed = true;
   $("sheet-view").hidden = true;
-  if (inClock) {
-    var ul = $("removed-list"); ul.textContent = "";
-    e.times.forEach(function (t) { ul.append(el("li", "", fmt12(t) + "  " + e.title)); });
-    $("sheet-removed").hidden = false;
-  }
+  if (inClock) showRemoved(gone, e.title, "Now delete it in Clock");
   refresh();
+}
+
+/* Times of this entry that already exist as alarms in the Clock app. */
+function clockTimes(e) { return e.status === "live" && !isDated(e) ? e.times.slice() : (e.skip || []).slice(); }
+function clockKey(e) { return JSON.stringify([e.title, e.repeat, (e.days || []).slice().sort(), e.date || ""]); }
+function showRemoved(times, title, heading) {
+  var ul = $("removed-list"); ul.textContent = "";
+  times.forEach(function (t) { ul.append(el("li", "", fmt12(t) + "  " + title)); });
+  $("removed-title").textContent = heading; $("sheet-removed").hidden = false;
 }
 
 /* ---- editor ---- */
@@ -372,21 +382,47 @@ function updatePreview() {
   $("f-preview").textContent = r.entry ? describe(r.entry) + " · " + (r.entry.times.length === 1 ? "1 alarm at " + fmt12(r.entry.times[0]) : r.entry.times.length + " alarms: " + r.entry.times.map(fmt12).join(", ")) : "";
   $("f-err").hidden = true;
 }
-function openEditor() {
+var editing = null;
+function openEditor(e) {
+  editing = e && e.id ? e : null;
+  $("edit-title").textContent = editing ? "Edit alarm" : "New alarm"; $("edit-save").textContent = editing ? "Save" : "Add";
   $("f-title").value = ""; $("f-time").value = "09:00"; $("f-date").value = todayISO(); $("f-date").min = todayISO();
   setFreq("none"); $("f-until").value = "10:00"; $("f-dom").value = 1; $("f-day").value = 1;
-  form.days = {}; Array.prototype.forEach.call($("f-days").children, function (b) { b.setAttribute("aria-pressed", "false"); });
-  setRepeat("once"); $("sheet-edit").hidden = false;
+  form.days = {};
+  if (editing) {
+    $("f-title").value = e.title; $("f-time").value = e.times[0];
+    if (e.times.length > 1) {
+      var g = toMin(e.times[1]) - toMin(e.times[0]), hourly = g % 60 === 0;
+      setFreq(hourly ? "hour" : "min"); $("f-every").value = hourly ? g / 60 : g; $("f-until").value = e.times[e.times.length - 1];
+    }
+    if (e.repeat === "weekly") e.days.forEach(function (d) { form.days[d] = true; });
+    if (e.repeat === "monthly") $("f-dom").value = e.dom;
+    if (e.repeat === "yearly") { $("f-month").value = e.month; $("f-day").value = e.day; }
+    if (e.repeat === "once" && e.date >= todayISO()) $("f-date").value = e.date;
+  }
+  Array.prototype.forEach.call($("f-days").children, function (b) { b.setAttribute("aria-pressed", String(!!form.days[b.dataset.d])); });
+  setRepeat(editing ? e.repeat : "once"); $("sheet-edit").hidden = false;
 }
 function saveEditor() {
   var r = readForm();
   if (r.error) { $("f-err").textContent = r.error; $("f-err").hidden = false; return; }
-  entries.push(r.entry); $("sheet-edit").hidden = true; refresh();
+  var n = r.entry, old = editing;
+  if (!old) { entries.push(n); $("sheet-edit").hidden = true; refresh(); return; }
+  /* Clock alarms cannot be changed from here: keep the ones that still match, create the new
+     ones, and list the ones that are no longer wanted so they can be deleted by hand. */
+  var had = clockTimes(old), same = !isDated(n) && clockKey(n) === clockKey(old);
+  var keep = same ? had.filter(function (t) { return n.times.indexOf(t) >= 0; }) : [];
+  var gone = had.filter(function (t) { return keep.indexOf(t) < 0; });
+  n.id = old.id; if (keep.length) n.skip = keep;
+  entries = entries.map(function (x) { return x.id === old.id ? n : x; });
+  if (old.status !== "pending" || had.length) changed = true;
+  editing = null; $("sheet-edit").hidden = true; refresh();
+  if (gone.length) showRemoved(gone, old.title, "Now delete the old ones in Clock");
 }
 
 /* ---- wiring ---- */
 DAYS.forEach(function (d) {
-  var b = el("button", "", DAY_SHORT[d]); b.type = "button"; b.setAttribute("aria-pressed", "false");
+  var b = el("button", "", DAY_SHORT[d]); b.type = "button"; b.dataset.d = d; b.setAttribute("aria-pressed", "false");
   b.addEventListener("click", function () { form.days[d] = !form.days[d]; b.setAttribute("aria-pressed", String(!!form.days[d])); updatePreview(); });
   $("f-days").append(b);
 });
@@ -394,7 +430,7 @@ MONTHS.forEach(function (m, i) { var o = el("option", "", m); o.value = i + 1; $
 Array.prototype.forEach.call($("f-repeat").children, function (b) { b.addEventListener("click", function () { setRepeat(b.dataset.v); }); });
 Array.prototype.forEach.call($("f-freq").children, function (b) { b.addEventListener("click", function () { setFreq(b.dataset.v); }); });
 ["f-title","f-time","f-date","f-dom","f-month","f-day","f-every","f-until"].forEach(function (id) { $(id).addEventListener("input", updatePreview); });
-$("btn-new").addEventListener("click", openEditor);
+$("btn-new").addEventListener("click", function () { openEditor(null); });
 $("edit-cancel").addEventListener("click", function () { $("sheet-edit").hidden = true; });
 $("edit-save").addEventListener("click", saveEditor);
 $("view-close").addEventListener("click", function () { $("sheet-view").hidden = true; });
