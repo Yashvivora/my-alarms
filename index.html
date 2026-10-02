@@ -70,6 +70,9 @@ h2.sec { margin: 26px 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 
 .err { color: var(--danger); font-size: 15px }
 ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-variant-numeric: tabular-nums }
 .spacer { width: 56px }
+.hdr { display: flex; gap: 8px; align-items: center }
+.paused { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--wait); margin-bottom: 4px }
+.paused b { color: var(--wait) }
 /* Full-screen "alarm ringing" view, opened by the Alarm Full Screen shortcut. Laid out like
    the iPhone's own lock-screen alarm: date, large thin time, alarm title, controls at the bottom. */
 .ring { position: fixed; inset: 0; z-index: 20; color: #ffffff; overflow-y: auto; text-align: center;
@@ -92,8 +95,9 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
 <div class="wrap">
   <header class="top">
     <h1>Alarms</h1>
-    <button class="btn primary" id="btn-new" type="button">+ New alarm</button>
+    <div class="hdr"><a class="btn" id="btn-pause" href="#" hidden>Pause all</a><button class="btn primary" id="btn-new" type="button">+ New alarm</button></div>
   </header>
+  <div id="paused" class="note paused" hidden><span><b>Alarms paused.</b> <span id="paused-n"></span></span><a class="btn primary" id="btn-resume" href="#">Resume</a></div>
   <div id="status" class="note" hidden></div>
   <div id="list"></div>
 </div>
@@ -168,7 +172,7 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
   <div class="in">
     <div class="bar"><span class="spacer"></span><h2>Sent to Shortcuts</h2><span class="spacer"></span></div>
     <p class="preview">If Safari asks, tap Open. The shortcut saves your changes and opens a fresh copy of this list. This tab is now out of date, so you can close it.</p>
-    <p class="preview">Nothing happened? Open the Shortcuts app and run My Alarms again, then redo the change.</p>
+    <p class="preview">Nothing happened? Open the Shortcuts app and run My Alarm List 4 again, then redo the change.</p>
   </div>
 </div>
 
@@ -226,16 +230,38 @@ function datedLines(list) {
 function clockLines(list) {
   var out = [];
   list.forEach(function (e) {
-    if (e.status !== "pending" || isDated(e)) return;
+    if (e.status !== "pending") return;
+    if (isDated(e)) {
+      if (!v4 || !appliesOn(e, new Date())) return;
+      e.times.forEach(function (t) { if (toMin(t) > nowMin()) out.push("O|" + t + "|" + clean(e.title)); });
+      return;
+    }
     var skip = e.skip || [];
     var days = e.repeat === "daily" ? DAYS : e.repeat === "weekly" ? DAYS.filter(function (d) { return e.days.indexOf(d) >= 0; }) : null;
     e.times.forEach(function (t) { if (skip.indexOf(t) >= 0) return; out.push(days ? "A|" + t + "|" + clean(e.title) + "|" + days.join(",") : "O|" + t + "|" + clean(e.title)); });
   });
   return out;
 }
-function buildPayload(list) {
+/* "X|Label|H|M|" lines: Clock alarms for the shortcut to delete (hours and minutes without
+   leading zeros, as Clock reports them). If another kept entry has the same title and time,
+   its alarm is made again, since the delete removes every alarm with that title and time. */
+function deleteLines(list) {
+  var out = [], again = [];
+  dels.forEach(function (d) {
+    var p = d.time.split(":").map(Number), x = "X|" + clean(d.title) + "|" + p[0] + "|" + p[1] + "|";
+    if (out.indexOf(x) < 0) out.push(x);
+    list.forEach(function (e) {
+      if (clean(e.title) !== clean(d.title) || e.status === "pending" || clockTimes(e).indexOf(d.time) < 0) return;
+      var days = e.repeat === "daily" ? DAYS : e.repeat === "weekly" ? DAYS.filter(function (x) { return e.days.indexOf(x) >= 0; }) : null;
+      var l = days ? "A|" + d.time + "|" + clean(e.title) + "|" + days.join(",") : "O|" + d.time + "|" + clean(e.title);
+      if (again.indexOf(l) < 0) again.push(l);
+    });
+  });
+  return out.concat(again);
+}
+function buildPayload(list, extra) {
   var saved = list.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; delete c.skip; return c; });
-  return ["GALARM1"].concat(clockLines(list), [fullList ? "GALARM-DATED-BEGIN-V2" : "GALARM-DATED-BEGIN"], datedLines(list), ["GALARM-DATED-END", "GALARM-STATE-BEGIN",
+  return ["GALARM1"].concat(extra || [], deleteLines(list), clockLines(list), [fullList ? "GALARM-DATED-BEGIN-V2" : "GALARM-DATED-BEGIN"], datedLines(list), ["GALARM-DATED-END", "GALARM-STATE-BEGIN",
     JSON.stringify({ v: 1, entries: saved }), "GALARM-STATE-END"]).join("\n");
 }
 function parseSaved(raw) {
@@ -252,6 +278,8 @@ var entries = [], changed = false, broken = false, locked = false, loaded = fals
 /* With the second version of the shortcuts the saved list holds every dated alarm, so the
    birthdays and monthly ones that used to be fixed inside the nightly shortcut are editable. */
 var fullList = false;
+/* Version 4 of the list shortcut can delete Clock alarms and pause / resume them all. */
+var v4 = false, pausedN = 0, dels = [], removedN = 0;
 function readHash() {
   var h = location.hash.slice(1); if (!h) return null;
   try { h = decodeURIComponent(h); } catch (err) {}
@@ -278,7 +306,9 @@ function load() {
   if (raw == null) return;
   try { history.replaceState(null, "", location.pathname); } catch (err) {}
   var nm = /^GALARM-NAME:(.+)$/m.exec(raw); if (nm) SHORTCUT = nm[1].trim();
-  var vm = /^GALARM-V:(\d+)$/m.exec(raw); fullList = !!vm && Number(vm[1]) >= 2;
+  var vm = /^GALARM-V:(\d+)$/m.exec(raw); fullList = !!vm && Number(vm[1]) >= 2; v4 = !!vm && Number(vm[1]) >= 4;
+  var pf = /GALARM-PAUSE-FILE-BEGIN\n([\s\S]*?)\nGALARM-PAUSE-FILE-END/.exec(raw);
+  pausedN = pf ? (pf[1].match(/^P\|/mg) || []).length : 0;
   ringing = /^GALARM-RING$/m.test(raw);
   var m = /GALARM-SEED-BEGIN\s*([\s\S]*?)\s*GALARM-SEED-END/.exec(raw);
   try { seed = JSON.parse(m[1]); } catch (err) { return; }
@@ -307,7 +337,7 @@ function refresh() {
   var box = $("list"); box.textContent = "";
   var st = $("status");
   $("btn-new").hidden = !loaded;
-  if (!loaded) { st.innerHTML = "<b>Open this page with the My Alarms shortcut.</b> Your alarm list is kept on your iPhone, and the shortcut brings it here. Opened on its own, this page has nothing to show."; st.hidden = false; $("sendbar").hidden = true; return; }
+  if (!loaded) { st.innerHTML = "<b>Open this page with the My Alarm List 4 shortcut.</b> Your alarm list is kept on your iPhone, and the shortcut brings it here. Opened on its own, this page has nothing to show."; st.hidden = false; $("sendbar").hidden = true; return; }
   if (broken) { st.innerHTML = "<b>Your saved list could not be read</b>, so this is the original list. Alarms you added before may be missing here, but they are still in Clock."; st.hidden = false; }
   else if (!entries.length) { st.innerHTML = "No alarms yet. Tap <b>+ New alarm</b> to add your first one."; st.hidden = false; }
   else st.hidden = true;
@@ -325,12 +355,18 @@ function refresh() {
     });
     box.append(rows);
   });
-  var pending = entries.filter(function (e) { return e.status === "pending"; }).length;
+  var pending = entries.filter(function (e) { return e.status === "pending"; }).length + removedN;
   var dirty = changed || pending > 0;
+  var run = "shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT) + "&input=text&text=";
+  $("btn-pause").hidden = !v4 || pausedN > 0;
+  $("paused").hidden = !v4 || pausedN === 0;
+  $("paused-n").textContent = pausedN + (pausedN === 1 ? " alarm is" : " alarms are") + " off until you resume.";
+  $("btn-pause").href = run + encodeURIComponent(buildPayload(entries, ["GALARM-PAUSE"]));
+  $("btn-resume").href = run + encodeURIComponent(buildPayload(entries, ["GALARM-RESUME"]));
   $("sendbar").hidden = !dirty;
   if (dirty) {
     $("sendbar-text").textContent = pending ? pending + (pending === 1 ? " change" : " changes") + " to save" : "Changes to save";
-    $("btn-send").href = "shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT) + "&input=text&text=" + encodeURIComponent(buildPayload(entries));
+    $("btn-send").href = run + encodeURIComponent(buildPayload(entries));
   }
 }
 
@@ -358,12 +394,16 @@ function removeViewing() {
   entries = entries.filter(function (x) { return x.id !== e.id; });
   if (!wasPending || inClock) changed = true;
   $("sheet-view").hidden = true;
-  if (inClock) showRemoved(gone, e.title, "Now delete it in Clock");
+  if (inClock && v4) { gone.forEach(function (t) { dels.push({ title: e.title, time: t }); }); removedN++; }
+  else if (inClock) showRemoved(gone, e.title, "Now delete it in Clock");
   refresh();
 }
 
 /* Times of this entry that already exist as alarms in the Clock app. */
-function clockTimes(e) { return e.status === "live" && !isDated(e) ? e.times.slice() : (e.skip || []).slice(); }
+function clockTimes(e) {
+  if (e.status === "live" && (!isDated(e) || (v4 && appliesOn(e, new Date())))) return e.times.slice();
+  return (e.skip || []).slice();
+}
 function clockKey(e) { return JSON.stringify([e.title, e.repeat, (e.days || []).slice().sort(), e.date || ""]); }
 function showRemoved(times, title, heading) {
   var ul = $("removed-list"); ul.textContent = "";
@@ -461,7 +501,8 @@ function saveEditor() {
   entries = entries.map(function (x) { return x.id === old.id ? n : x; });
   if (old.status !== "pending" || had.length) changed = true;
   editing = null; $("sheet-edit").hidden = true; refresh();
-  if (gone.length) showRemoved(gone, old.title, "Now delete the old ones in Clock");
+  if (gone.length && v4) gone.forEach(function (t) { dels.push({ title: old.title, time: t }); });
+  else if (gone.length) showRemoved(gone, old.title, "Now delete the old ones in Clock");
 }
 
 /* ---- wiring ---- */
@@ -479,9 +520,11 @@ $("edit-cancel").addEventListener("click", function () { $("sheet-edit").hidden 
 $("edit-save").addEventListener("click", saveEditor);
 $("view-close").addEventListener("click", function () { $("sheet-view").hidden = true; });
 $("removed-ok").addEventListener("click", function () { $("sheet-removed").hidden = true; });
-$("btn-send").addEventListener("click", function (ev) {
-  if (locked) { ev.preventDefault(); return; }
-  locked = true; setTimeout(function () { $("sheet-sent").hidden = false; }, 600);
+["btn-send", "btn-pause", "btn-resume"].forEach(function (id) {
+  $(id).addEventListener("click", function (ev) {
+    if (locked) { ev.preventDefault(); return; }
+    locked = true; setTimeout(function () { $("sheet-sent").hidden = false; }, 600);
+  });
 });
 /* ---- ringing view ---- */
 function appliesOn(e, d) {
