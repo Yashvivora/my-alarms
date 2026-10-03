@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>My Alarms</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Alarms">
+<meta name="theme-color" content="#000000">
 <style>
 /* One phone-width column: alarm rows under a sticky header; sheets for the editor and details. */
 :root {
@@ -70,6 +77,11 @@ h2.sec { margin: 26px 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 
 .err { color: var(--danger); font-size: 15px }
 ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-variant-numeric: tabular-nums }
 .spacer { width: 56px }
+.app-foot { margin-top: 28px; text-align: center }
+.app-foot .btn { font-weight: 500 }
+.setup .btn { text-align: center }
+.setup { display: flex; flex-direction: column; gap: 14px }
+.setup ol { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; color: var(--fg) }
 .hdr { display: flex; gap: 8px; align-items: center }
 .paused { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--wait); margin-bottom: 4px }
 .paused b { color: var(--wait) }
@@ -100,6 +112,15 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
   <div id="paused" class="note paused" hidden><span><b>Alarms paused.</b> <span id="paused-n"></span></span><a class="btn primary" id="btn-resume" href="#">Resume</a></div>
   <div id="status" class="note" hidden></div>
   <div id="list"></div>
+  <div id="app-setup" class="note setup" hidden>
+    <b>Load your alarms into this app</b>
+    <ol><li>Tap <b>Load my alarms</b>. The My Alarm List 4 shortcut runs and copies your list.</li>
+      <li>Come back to this app and tap <b>Paste</b>. If iPhone asks, tap Paste again.</li></ol>
+    <a class="btn primary" id="btn-export" href="#">Load my alarms</a>
+    <button class="btn" id="btn-paste" type="button">Paste</button>
+    <div class="err" id="paste-err" hidden></div>
+  </div>
+  <div class="app-foot" id="app-foot" hidden><button class="btn ghost" id="btn-reload" type="button">Reload list from iPhone</button></div>
 </div>
 
 <div class="sendbar" id="sendbar" hidden>
@@ -171,7 +192,11 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
 <div class="sheet" id="sheet-sent" hidden>
   <div class="in">
     <div class="bar"><span class="spacer"></span><h2>Sent to Shortcuts</h2><span class="spacer"></span></div>
-    <p class="preview">If Safari asks, tap Open. The shortcut saves your changes and opens a fresh copy of this list. This tab is now out of date, so you can close it.</p>
+    <div id="sent-app" hidden>
+      <p class="preview">The shortcut is updating Clock. When it says Done, come back to this app: your list here is already up to date.</p>
+      <button class="btn primary" id="sent-ok" type="button">OK</button>
+    </div>
+    <p class="preview" id="sent-web">If Safari asks, tap Open. The shortcut saves your changes and opens a fresh copy of this list. This tab is now out of date, so you can close it.</p>
     <p class="preview">Nothing happened? Open the Shortcuts app and run My Alarm List 4 again, then redo the change.</p>
   </div>
 </div>
@@ -280,9 +305,31 @@ var entries = [], changed = false, broken = false, locked = false, loaded = fals
 var fullList = false;
 /* Version 4 of the list shortcut can delete Clock alarms and pause / resume them all. */
 var v4 = false, pausedN = 0, dels = [], removedN = 0;
+/* Home Screen app mode: the list is kept in this app's own storage on the phone (a Home Screen
+   app does not share storage with Safari). It is loaded once from the shortcut through the
+   clipboard; after that each Save / Pause / Resume updates it here as it is sent. */
+var appMode = /[?&]app=1/.test(location.search) || navigator.standalone === true ||
+  (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+var STORE = "galarm-app-v1";
+function saveLocal() {
+  if (!appMode) return;
+  try { localStorage.setItem(STORE, JSON.stringify({ name: SHORTCUT, v4: v4, fullList: fullList, pausedN: pausedN, entries: entries })); } catch (err) {}
+}
+function loadLocal() {
+  var st = null;
+  try { st = JSON.parse(localStorage.getItem(STORE)); } catch (err) { st = null; }
+  if (!st || !Array.isArray(st.entries)) return false;
+  SHORTCUT = st.name || SHORTCUT; v4 = !!st.v4; fullList = !!st.fullList; pausedN = st.pausedN || 0; entries = st.entries; loaded = true;
+  var today = todayISO();
+  entries = entries.filter(function (e) { return !(e.repeat === "once" && e.date < today); });
+  return true;
+}
 function readHash() {
   var h = location.hash.slice(1); if (!h) return null;
   try { h = decodeURIComponent(h); } catch (err) {}
+  return decodeB64(h);
+}
+function decodeB64(h) {
   var bin = atob(h.replace(/-/g, "+").replace(/_/g, "/")), bytes = new Uint8Array(bin.length);
   for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new TextDecoder().decode(bytes);
@@ -301,17 +348,24 @@ function unmerge(saved, seed) {
 }
 var ringing = false;
 function load() {
-  var raw = null, saved = null, seed = null;
+  var raw = null;
   try { raw = readHash(); } catch (err) { raw = null; }
-  if (raw == null) return;
-  try { history.replaceState(null, "", location.pathname); } catch (err) {}
+  if (raw == null) { if (appMode) loadLocal(); return; }
+  try { history.replaceState(null, "", location.pathname + location.search); } catch (err) {}
+  if (loadRaw(raw)) saveLocal();
+}
+/* Read the text the shortcut hands over (after the # of the address, or on the clipboard). */
+function loadRaw(raw) {
+  var saved = null, seed = null;
+  if (!/GALARM-SEED-BEGIN/.test(raw)) return false;
+  broken = false; changed = false; dels = []; removedN = 0;
   var nm = /^GALARM-NAME:(.+)$/m.exec(raw); if (nm) SHORTCUT = nm[1].trim();
   var vm = /^GALARM-V:(\d+)$/m.exec(raw); fullList = !!vm && Number(vm[1]) >= 2; v4 = !!vm && Number(vm[1]) >= 4;
   var pf = /GALARM-PAUSE-FILE-BEGIN\n([\s\S]*?)\nGALARM-PAUSE-FILE-END/.exec(raw);
   pausedN = pf ? (pf[1].match(/^P\|/mg) || []).length : 0;
   ringing = /^GALARM-RING$/m.test(raw);
   var m = /GALARM-SEED-BEGIN\s*([\s\S]*?)\s*GALARM-SEED-END/.exec(raw);
-  try { seed = JSON.parse(m[1]); } catch (err) { return; }
+  try { seed = JSON.parse(m[1]); } catch (err) { return false; }
   try { saved = parseSaved(raw.slice(m.index + m[0].length)); } catch (err) { broken = true; }
   entries = saved ? unmerge(saved, seed) : seed; loaded = true;
   if (fullList) entries.forEach(function (e) { if (e.status === "builtin") e.status = "live"; });
@@ -319,6 +373,7 @@ function load() {
   entries = entries.filter(function (e) { return !(e.repeat === "once" && e.date < today); });
   entries.forEach(function (e, i) { if (!e.id) e.id = "s" + i; });
   if (entries.length !== before) changed = true;
+  return true;
 }
 
 /* ---- list ---- */
@@ -337,6 +392,10 @@ function refresh() {
   var box = $("list"); box.textContent = "";
   var st = $("status");
   $("btn-new").hidden = !loaded;
+  $("app-setup").hidden = !(appMode && !loaded);
+  $("app-foot").hidden = !(appMode && loaded);
+  $("btn-export").href = "shortcuts://run-shortcut?name=" + encodeURIComponent("My Alarm List 4") + "&input=text&text=" + encodeURIComponent("GALARM1\nGALARM-APP\n");
+  if (appMode && !loaded) { st.hidden = true; $("sendbar").hidden = true; $("btn-pause").hidden = true; $("paused").hidden = true; return; }
   if (!loaded) { st.innerHTML = "<b>Open this page with the My Alarm List 4 shortcut.</b> Your alarm list is kept on your iPhone, and the shortcut brings it here. Opened on its own, this page has nothing to show."; st.hidden = false; $("sendbar").hidden = true; return; }
   if (broken) { st.innerHTML = "<b>Your saved list could not be read</b>, so this is the original list. Alarms you added before may be missing here, but they are still in Clock."; st.hidden = false; }
   else if (!entries.length) { st.innerHTML = "No alarms yet. Tap <b>+ New alarm</b> to add your first one."; st.hidden = false; }
@@ -360,13 +419,14 @@ function refresh() {
   var run = "shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT) + "&input=text&text=";
   $("btn-pause").hidden = !v4 || pausedN > 0;
   $("paused").hidden = !v4 || pausedN === 0;
-  $("paused-n").textContent = pausedN + (pausedN === 1 ? " alarm is" : " alarms are") + " off until you resume.";
-  $("btn-pause").href = run + encodeURIComponent(buildPayload(entries, ["GALARM-PAUSE"]));
-  $("btn-resume").href = run + encodeURIComponent(buildPayload(entries, ["GALARM-RESUME"]));
+  $("paused-n").textContent = pausedN < 0 ? "Alarms are off until you resume." : pausedN + (pausedN === 1 ? " alarm is" : " alarms are") + " off until you resume.";
+  var app = appMode ? ["GALARM-APP"] : [];
+  $("btn-pause").href = run + encodeURIComponent(buildPayload(entries, app.concat(["GALARM-PAUSE"])));
+  $("btn-resume").href = run + encodeURIComponent(buildPayload(entries, app.concat(["GALARM-RESUME"])));
   $("sendbar").hidden = !dirty;
   if (dirty) {
     $("sendbar-text").textContent = pending ? pending + (pending === 1 ? " change" : " changes") + " to save" : "Changes to save";
-    $("btn-send").href = run + encodeURIComponent(buildPayload(entries));
+    $("btn-send").href = run + encodeURIComponent(buildPayload(entries, app));
   }
 }
 
@@ -523,9 +583,38 @@ $("removed-ok").addEventListener("click", function () { $("sheet-removed").hidde
 ["btn-send", "btn-pause", "btn-resume"].forEach(function (id) {
   $(id).addEventListener("click", function (ev) {
     if (locked) { ev.preventDefault(); return; }
-    locked = true; setTimeout(function () { $("sheet-sent").hidden = false; }, 600);
+    if (appMode) { setTimeout(function () { commitSent(id); }, 300); $("sent-app").hidden = false; $("sent-web").hidden = true; }
+    else locked = true;
+    setTimeout(function () { $("sheet-sent").hidden = false; }, 600);
   });
 });
+/* App mode: what was just sent is now the saved list (the same thing the shortcut stores). */
+function commitSent(id) {
+  entries = entries.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; delete c.skip; return c; });
+  dels = []; removedN = 0; changed = false;
+  if (id === "btn-pause") pausedN = -1;
+  if (id === "btn-resume") pausedN = 0;
+  saveLocal(); refresh();
+}
+$("sent-ok").addEventListener("click", function () { $("sheet-sent").hidden = true; });
+$("btn-paste").addEventListener("click", function () {
+  var err = $("paste-err"); err.hidden = true;
+  if (!navigator.clipboard || !navigator.clipboard.readText) { err.textContent = "This phone does not let the app read the clipboard."; err.hidden = false; return; }
+  navigator.clipboard.readText().then(function (t) {
+    var raw = null;
+    try { raw = decodeB64(String(t).trim()); } catch (e) { raw = null; }
+    if (!raw || !loadRaw(raw)) throw new Error("not a list");
+    saveLocal(); window.scrollTo(0, 0); refresh();
+  }).catch(function () {
+    err.textContent = "The clipboard does not hold your alarm list yet. Tap Load my alarms, wait for the shortcut to say Done, then come back and tap Paste.";
+    err.hidden = false;
+  });
+});
+$("btn-reload").addEventListener("click", function () {
+  if (!confirm("Reload the list from your iPhone? Changes not saved yet are dropped.")) return;
+  loaded = false; refresh(); window.scrollTo(0, 0);
+});
+if ("serviceWorker" in navigator) { try { navigator.serviceWorker.register("sw.js"); } catch (err) {} }
 /* ---- ringing view ---- */
 function appliesOn(e, d) {
   if (e.repeat === "daily") return true;
