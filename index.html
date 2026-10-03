@@ -396,7 +396,9 @@ function refresh() {
   $("app-foot").hidden = !(appMode && loaded);
   $("btn-export").href = "shortcuts://run-shortcut?name=" + encodeURIComponent("My Alarm List 4") + "&input=text&text=" + encodeURIComponent("GALARM1\nGALARM-APP\n");
   if (appMode && !loaded) { st.hidden = true; $("sendbar").hidden = true; $("btn-pause").hidden = true; $("paused").hidden = true; return; }
-  if (!loaded) { st.innerHTML = "<b>Open this page with the My Alarm List 4 shortcut.</b> Your alarm list is kept on your iPhone, and the shortcut brings it here. Opened on its own, this page has nothing to show."; st.hidden = false; $("sendbar").hidden = true; return; }
+  if (!loaded) { st.innerHTML = "<b>Install this as an app first.</b> Your alarm list is kept on your iPhone, not on this website, so this page is empty when opened in the browser.<br><br>"
+    + "1. Tap the <b>Share</b> button, then <b>Add to Home Screen</b>, then <b>Add</b>.<br>2. Open <b>Alarms</b> from your Home Screen.<br>3. There, tap <b>Load my alarms</b>, then come back and tap <b>Paste</b>.<br><br>"
+    + "(Or run the <b>My Alarm List 4</b> shortcut to see the list here in the browser.)"; st.hidden = false; $("sendbar").hidden = true; return; }
   if (broken) { st.innerHTML = "<b>Your saved list could not be read</b>, so this is the original list. Alarms you added before may be missing here, but they are still in Clock."; st.hidden = false; }
   else if (!entries.length) { st.innerHTML = "No alarms yet. Tap <b>+ New alarm</b> to add your first one."; st.hidden = false; }
   else st.hidden = true;
