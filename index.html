@@ -53,6 +53,15 @@ h2.sec { margin: 26px 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 
 .pill { grid-row: 1 / span 3; grid-column: 2; font-size: 12px; font-weight: 600; border-radius: 99px; padding: 4px 10px;
   border: 1px solid currentColor; white-space: nowrap }
 .pill.live { color: var(--ok) } .pill.pending { color: var(--wait) } .pill.builtin { color: var(--muted) }
+.pill.ok { color: var(--ok) } .pill.low { color: var(--wait) } .pill.out { color: var(--danger) }
+.row .pill.out { background: var(--danger); color: var(--on-accent); border-color: var(--danger) }
+.sechead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 26px }
+.sechead h2.sec { margin: 0 0 8px }
+.sechead .btn.ghost { font-size: 14px; font-weight: 500; padding-block: 4px }
+.alertbox { border: 1px solid var(--danger); margin-bottom: 10px; color: var(--fg) }
+.alertbox b { color: var(--danger) }
+.addrow { margin-top: 10px; width: 100%; text-align: center; font-weight: 500 }
+.field textarea { background: transparent; border: 0; padding: 4px 0; font-size: 17px; width: 100%; min-height: 56px; resize: vertical; font-family: inherit }
 .sendbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--surface); border-top: 1px solid var(--line);
   padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)) }
 .sendbar .in { max-width: 488px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px }
@@ -111,7 +120,9 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
   </header>
   <div id="paused" class="note paused" hidden><span><b>Alarms paused.</b> <span id="paused-n"></span></span><a class="btn primary" id="btn-resume" href="#">Resume</a></div>
   <div id="status" class="note" hidden></div>
+  <div id="med-alert" class="note alertbox" hidden></div>
   <div id="list"></div>
+  <div id="meds"></div>
   <div id="app-setup" class="note setup" hidden>
     <b>Load your alarms into this app</b>
     <ol><li>Tap <b>Load my alarms</b>. The My Alarm List 4 shortcut runs and copies your list.</li>
@@ -158,6 +169,38 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
     </div>
     <p class="preview" id="f-preview"></p>
     <div class="err" id="f-err" hidden></div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet-med" hidden>
+  <div class="in">
+    <div class="bar"><button class="btn ghost" id="med-cancel" type="button">Cancel</button><h2 id="med-title">New medicine</h2><button class="btn ghost" id="med-save" type="button">Add</button></div>
+    <div class="field"><label for="f-m-name">Medicine</label><input id="f-m-name" type="text" maxlength="60" placeholder="Metformin 500 mg" autocomplete="off"></div>
+    <div class="pair">
+      <div class="field"><label for="f-m-dose">How much each time</label><input id="f-m-dose" type="number" min="0.25" step="0.25" value="1" inputmode="decimal"></div>
+      <div class="field"><label for="f-m-perday">Times a day</label><input id="f-m-perday" type="number" min="1" max="12" value="2" inputmode="numeric"></div>
+    </div>
+    <div class="pair">
+      <div class="field"><label for="f-m-stock">In stock (tablets, doses)</label><input id="f-m-stock" type="number" min="0" step="1" inputmode="numeric"></div>
+      <div class="field"><label for="f-m-date">Counted on</label><input id="f-m-date" type="date"></div>
+    </div>
+    <div class="field"><label for="f-m-notes">Prescription notes</label><textarea id="f-m-notes" maxlength="200" placeholder="1 tablet after breakfast and dinner"></textarea></div>
+    <p class="preview" id="f-m-preview"></p>
+    <p class="preview">Count the stock before the first dose of that day. Restock reminders ring twice a day from one week before it runs out (change the times under Medicines).</p>
+    <div class="err" id="f-m-err" hidden></div>
+    <div><button class="btn danger" id="med-del" type="button" hidden>Remove medicine</button></div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet-medcfg" hidden>
+  <div class="in">
+    <div class="bar"><button class="btn ghost" id="medcfg-cancel" type="button">Cancel</button><h2>Restock reminders</h2><button class="btn ghost" id="medcfg-save" type="button">Done</button></div>
+    <div class="pair">
+      <div class="field"><label for="f-c-am">Morning</label><input id="f-c-am" type="time" value="09:00"></div>
+      <div class="field"><label for="f-c-pm">Night</label><input id="f-c-pm" type="time" value="21:00"></div>
+    </div>
+    <div class="field"><label for="f-c-warn">Start how many days before it runs out</label><input id="f-c-warn" type="number" min="1" max="30" value="7" inputmode="numeric"></div>
+    <p class="preview">Two reminders a day, from that many days before a medicine runs out until a week after, or until you update its stock.</p>
   </div>
 </div>
 
@@ -243,6 +286,47 @@ function describe(e) {
   return "Once, " + (e.date === todayISO() ? "today" : new Date(e.date + "T12:00:00").toLocaleDateString(undefined, {weekday:"short", month:"short", day:"numeric", year:"numeric"}));
 }
 function isDated(e) { return e.repeat === "monthly" || e.repeat === "yearly" || (e.repeat === "once" && e.date > todayISO()); }
+
+/* ---- medicines: stock arithmetic (pure) ---- */
+var MON3 = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+var MED_DEFAULTS = { am: "09:00", pm: "21:00", warn: 7, after: 7 };
+function addDays(iso, n) { var d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+function dayDiff(a, b) { return Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5); }
+function shortDate(iso) { var p = iso.split("-"); return MON3[Number(p[1]) - 1] + " " + Number(p[2]); }
+/* The stock is taken as counted before that day's first dose, so the day it was counted on is a
+   full day of use. runOut = the first day without a full day's supply; daysLeft counts from today. */
+function medCalc(m, today) {
+  var daily = Number(m.dose) * Number(m.perDay);
+  if (!(daily > 0) || !m.countedOn || !(Number(m.stock) >= 0)) return null;
+  var full = Math.floor(Number(m.stock) / daily), runOut = addDays(m.countedOn, full);
+  var left = full - dayDiff(m.countedOn, today || todayISO());
+  return { daily: daily, runOut: runOut, daysLeft: left, status: left > medCfg.warn ? "ok" : left > 0 ? "low" : "out" };
+}
+function medLabel(name, runOut, iso) {
+  var n = dayDiff(iso, runOut);
+  if (n > 0) return "Restock " + name + ": " + n + (n === 1 ? " day" : " days") + " left, runs out " + shortDate(runOut);
+  if (n === 0) return "Restock " + name + ": runs out today";
+  return "Restock " + name + ": out of stock since " + shortDate(runOut);
+}
+/* Reminder lines for every medicine, twice a day from `warn` days before it runs out until `after`
+   days after. "D<yyyyMMdd>|HH:MM|label" lines go to the dated list (the nightly shortcut makes the
+   alarms on the day); "O|HH:MM|label" lines are today's, created straight away when saved. */
+function medLinesFor(list, cfg) {
+  var today = todayISO(), dated = [], now = [];
+  list.forEach(function (m) {
+    var c = medCalc(m, today); if (!c) return;
+    var name = clean(m.name);
+    for (var k = -cfg.warn; k <= cfg.after; k++) {
+      var iso = addDays(c.runOut, k); if (iso < today) continue;
+      var label = clean(medLabel(name, c.runOut, iso));
+      [cfg.am, cfg.pm].forEach(function (t) {
+        if (iso === today) now.push("O|" + t + "|" + label);
+        else dated.push("D" + iso.replace(/-/g, "") + "|" + t + "|" + label);
+      });
+    }
+  });
+  return { dated: dated, today: now };
+}
 function datedLines(list) {
   var out = [];
   list.forEach(function (e) {
@@ -250,7 +334,7 @@ function datedLines(list) {
     var key = e.repeat === "monthly" ? "M" + pad(e.dom) : e.repeat === "yearly" ? "Y" + pad(e.month) + pad(e.day) : "D" + e.date.replace(/-/g, "");
     e.times.forEach(function (t) { out.push(key + "|" + t + "|" + clean(e.title)); });
   });
-  return out.sort();
+  return out.concat(medLinesFor(meds, medCfg).dated).sort();
 }
 function clockLines(list) {
   var out = [];
@@ -265,13 +349,20 @@ function clockLines(list) {
     var days = e.repeat === "daily" ? DAYS : e.repeat === "weekly" ? DAYS.filter(function (d) { return e.days.indexOf(d) >= 0; }) : null;
     e.times.forEach(function (t) { if (skip.indexOf(t) >= 0) return; out.push(days ? "A|" + t + "|" + clean(e.title) + "|" + days.join(",") : "O|" + t + "|" + clean(e.title)); });
   });
+  /* today's restock reminders not yet in Clock (medBase = the ones made from the saved list) */
+  medLinesFor(meds, medCfg).today.forEach(function (l) { if (medBase.indexOf(l) < 0 && toMin(l.split("|")[1]) > nowMin()) out.push(l); });
   return out;
 }
 /* "X|Label|H|M|" lines: Clock alarms for the shortcut to delete (hours and minutes without
    leading zeros, as Clock reports them). If another kept entry has the same title and time,
    its alarm is made again, since the delete removes every alarm with that title and time. */
 function deleteLines(list) {
-  var out = [], again = [];
+  var out = [], again = [], medNow = medLinesFor(meds, medCfg).today;
+  medBase.forEach(function (l) {        /* today's restock alarms that a stock change made wrong */
+    if (medNow.indexOf(l) >= 0) return;
+    var p = l.split("|"), t = p[1].split(":").map(Number), x = "X|" + p[2] + "|" + t[0] + "|" + t[1] + "|";
+    if (out.indexOf(x) < 0) out.push(x);
+  });
   dels.forEach(function (d) {
     var p = d.time.split(":").map(Number), x = "X|" + clean(d.title) + "|" + p[0] + "|" + p[1] + "|";
     if (out.indexOf(x) < 0) out.push(x);
@@ -287,14 +378,14 @@ function deleteLines(list) {
 function buildPayload(list, extra) {
   var saved = list.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; delete c.skip; return c; });
   return ["GALARM1"].concat(extra || [], deleteLines(list), clockLines(list), [fullList ? "GALARM-DATED-BEGIN-V2" : "GALARM-DATED-BEGIN"], datedLines(list), ["GALARM-DATED-END", "GALARM-STATE-BEGIN",
-    JSON.stringify({ v: 1, entries: saved }), "GALARM-STATE-END"]).join("\n");
+    JSON.stringify({ v: 1, entries: saved, medicines: meds, medCfg: medCfg }), "GALARM-STATE-END"]).join("\n");
 }
 function parseSaved(raw) {
   var m = /GALARM-STATE-BEGIN\s*([\s\S]*?)\s*GALARM-STATE-END/.exec(raw || "");
   if (!m) return null;
   var s = JSON.parse(m[1]);
   if (!s || !Array.isArray(s.entries)) throw new Error("bad state");
-  return s.entries;
+  return s;
 }
 
 /* ---- state: this page stores nothing. The My Alarms shortcut hands the list in after the # of
@@ -305,6 +396,11 @@ var entries = [], changed = false, broken = false, locked = false, loaded = fals
 var fullList = false;
 /* Version 4 of the list shortcut can delete Clock alarms and pause / resume them all. */
 var v4 = false, pausedN = 0, dels = [], removedN = 0;
+/* Medicines (version 5): name, dose each time, times a day, stock, the date it was counted, notes.
+   Kept in the saved list next to the alarms. medBase = today's restock lines as they were when
+   the list was loaded (so they are not created twice, and are deleted if the stock changes). */
+var meds = [], medCfg = Object.assign({}, MED_DEFAULTS), medBase = [], medChanged = 0;
+function setMeds(list, cfg) { meds = Array.isArray(list) ? list : []; medCfg = Object.assign({}, MED_DEFAULTS, cfg || {}); medBase = medLinesFor(meds, medCfg).today; medChanged = 0; }
 /* Home Screen app mode: the list is kept in this app's own storage on the phone (a Home Screen
    app does not share storage with Safari). It is loaded once from the shortcut through the
    clipboard; after that each Save / Pause / Resume updates it here as it is sent. */
@@ -313,13 +409,14 @@ var appMode = /[?&]app=1/.test(location.search) || navigator.standalone === true
 var STORE = "galarm-app-v1";
 function saveLocal() {
   if (!appMode) return;
-  try { localStorage.setItem(STORE, JSON.stringify({ name: SHORTCUT, v4: v4, fullList: fullList, pausedN: pausedN, entries: entries })); } catch (err) {}
+  try { localStorage.setItem(STORE, JSON.stringify({ name: SHORTCUT, v4: v4, fullList: fullList, pausedN: pausedN, entries: entries, medicines: meds, medCfg: medCfg })); } catch (err) {}
 }
 function loadLocal() {
   var st = null;
   try { st = JSON.parse(localStorage.getItem(STORE)); } catch (err) { st = null; }
   if (!st || !Array.isArray(st.entries)) return false;
   SHORTCUT = st.name || SHORTCUT; v4 = !!st.v4; fullList = !!st.fullList; pausedN = st.pausedN || 0; entries = st.entries; loaded = true;
+  setMeds(st.medicines, st.medCfg);
   var today = todayISO();
   entries = entries.filter(function (e) { return !(e.repeat === "once" && e.date < today); });
   return true;
@@ -364,9 +461,12 @@ function loadRaw(raw) {
   var pf = /GALARM-PAUSE-FILE-BEGIN\n([\s\S]*?)\nGALARM-PAUSE-FILE-END/.exec(raw);
   pausedN = pf ? (pf[1].match(/^P\|/mg) || []).length : 0;
   ringing = /^GALARM-RING$/m.test(raw);
-  var m = /GALARM-SEED-BEGIN\s*([\s\S]*?)\s*GALARM-SEED-END/.exec(raw);
+  var m = /GALARM-SEED-BEGIN\s*([\s\S]*?)\s*GALARM-SEED-END/.exec(raw), st = null, seedMeds = [];
   try { seed = JSON.parse(m[1]); } catch (err) { return false; }
-  try { saved = parseSaved(raw.slice(m.index + m[0].length)); } catch (err) { broken = true; }
+  var mm = /GALARM-MEDS-BEGIN\s*([\s\S]*?)\s*GALARM-MEDS-END/.exec(raw);
+  if (mm) { try { seedMeds = JSON.parse(mm[1]); } catch (err) { seedMeds = []; } }
+  try { st = parseSaved(raw.slice(m.index + m[0].length)); saved = st && st.entries; } catch (err) { broken = true; }
+  setMeds(st && Array.isArray(st.medicines) ? st.medicines : seedMeds, st && st.medCfg);
   entries = saved ? unmerge(saved, seed) : seed; loaded = true;
   if (fullList) entries.forEach(function (e) { if (e.status === "builtin") e.status = "live"; });
   var today = todayISO(), before = entries.length;
@@ -416,12 +516,13 @@ function refresh() {
     });
     box.append(rows);
   });
-  var pending = entries.filter(function (e) { return e.status === "pending"; }).length + removedN;
+  renderMeds();
+  var pending = entries.filter(function (e) { return e.status === "pending"; }).length + removedN + medChanged;
   var dirty = changed || pending > 0;
   var run = "shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT) + "&input=text&text=";
   $("btn-pause").hidden = !v4 || pausedN > 0;
   $("paused").hidden = !v4 || pausedN === 0;
-  $("paused-n").textContent = pausedN < 0 ? "Alarms are off until you resume." : pausedN + (pausedN === 1 ? " alarm is" : " alarms are") + " off until you resume.";
+  $("paused-n").textContent = (pausedN < 0 ? "Alarms are off" : pausedN + (pausedN === 1 ? " alarm is" : " alarms are") + " off") + " until you resume, or for 12 hours at most.";
   var app = appMode ? ["GALARM-APP"] : [];
   $("btn-pause").href = run + encodeURIComponent(buildPayload(entries, app.concat(["GALARM-PAUSE"])));
   $("btn-resume").href = run + encodeURIComponent(buildPayload(entries, app.concat(["GALARM-RESUME"])));
@@ -430,6 +531,80 @@ function refresh() {
     $("sendbar-text").textContent = pending ? pending + (pending === 1 ? " change" : " changes") + " to save" : "Changes to save";
     $("btn-send").href = run + encodeURIComponent(buildPayload(entries, app));
   }
+}
+
+/* ---- medicines list, with a warning box when any is running low ---- */
+var MED_PILL = { ok: "OK", low: "Low", out: "Out of stock" };
+function renderMeds() {
+  var mb = $("meds"), ma = $("med-alert"); mb.textContent = ""; ma.hidden = true;
+  if (!loaded) return;
+  var head = el("div", "sechead"); head.append(el("h2", "sec", "Medicines · " + meds.length));
+  var cfgb = el("button", "btn ghost", "Reminders " + fmt12(medCfg.am) + " & " + fmt12(medCfg.pm)); cfgb.type = "button";
+  cfgb.addEventListener("click", openMedCfg); head.append(cfgb); mb.append(head);
+  var rows = el("div", "rows"), warn = [];
+  meds.map(function (m) { return { m: m, c: medCalc(m) }; }).sort(function (a, b) {
+    return (a.c ? a.c.runOut : "9") < (b.c ? b.c.runOut : "9") ? -1 : 1;
+  }).forEach(function (x) {
+    var m = x.m, c = x.c, b = el("button", "row"); b.type = "button";
+    var big = el("div", "time", !c ? "?" : c.daysLeft > 0 ? c.daysLeft + (c.daysLeft === 1 ? " day" : " days") : "Out");
+    big.append(el("small", "", !c ? "set the dose and stock" : c.daysLeft > 0 ? "left · runs out " + shortDate(c.runOut) : c.daysLeft === 0 ? "runs out today" : "since " + shortDate(c.runOut)));
+    b.append(big, el("span", "pill " + (c ? c.status : "builtin"), c ? MED_PILL[c.status] : "Incomplete"), el("div", "title", m.name),
+             el("div", "when", m.dose + " × " + m.perDay + " a day · " + m.stock + " in stock on " + shortDate(m.countedOn) + (m.notes ? " · " + m.notes : "")));
+    b.addEventListener("click", function () { openMed(m); }); rows.append(b);
+    if (c && c.status === "low") warn.push(m.name + " runs out " + (c.daysLeft === 1 ? "tomorrow" : "in " + c.daysLeft + " days") + " (" + shortDate(c.runOut) + ").");
+    if (c && c.status === "out") warn.push(m.name + (c.daysLeft === 0 ? " runs out today." : " has been out of stock since " + shortDate(c.runOut) + "."));
+  });
+  if (meds.length) mb.append(rows);
+  else mb.append(el("p", "preview", "Add each medicine with its dose and how many you have. The app works out when it runs out and reminds you to restock a week ahead, twice a day."));
+  var add = el("button", "btn addrow", "+ Add medicine"); add.type = "button"; add.addEventListener("click", function () { openMed(null); }); mb.append(add);
+  if (warn.length) { ma.textContent = ""; ma.append(el("b", "", "Restock soon. "), document.createTextNode(warn.join(" "))); ma.hidden = false; }
+}
+
+/* ---- medicine editor ---- */
+var medEditing = null;
+function openMed(m) {
+  medEditing = m || null;
+  $("med-title").textContent = m ? "Edit medicine" : "New medicine"; $("med-save").textContent = m ? "Save" : "Add";
+  $("f-m-name").value = m ? m.name : ""; $("f-m-dose").value = m ? m.dose : 1; $("f-m-perday").value = m ? m.perDay : 2;
+  $("f-m-stock").value = m ? m.stock : ""; $("f-m-date").value = m ? m.countedOn : todayISO(); $("f-m-date").max = todayISO();
+  $("f-m-notes").value = m && m.notes ? m.notes : "";
+  $("med-del").hidden = !m; $("f-m-err").hidden = true; medPreview(); $("sheet-med").hidden = false;
+}
+function readMed() {
+  var name = clean($("f-m-name").value), dose = Number($("f-m-dose").value), perDay = Number($("f-m-perday").value), stock = Number($("f-m-stock").value), date = $("f-m-date").value;
+  if (!name) return { error: "Give the medicine a name." };
+  if (!(dose > 0)) return { error: "Enter how much you take each time, for example 1 or 0.5." };
+  if (!(Number.isInteger(perDay) && perDay >= 1 && perDay <= 12)) return { error: "Enter how many times a day, from 1 to 12." };
+  if ($("f-m-stock").value === "" || !(stock >= 0)) return { error: "Enter how many you have in stock (0 if none)." };
+  if (!date || date > todayISO()) return { error: "Pick the day you counted the stock (today or earlier)." };
+  return { med: { id: medEditing ? medEditing.id : "m" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36),
+                  name: name, dose: dose, perDay: perDay, stock: stock, countedOn: date, notes: clean($("f-m-notes").value) } };
+}
+function medPreview() {
+  var r = readMed(), out = $("f-m-preview"); $("f-m-err").hidden = true;
+  if (!r.med) { out.textContent = ""; return; }
+  var c = medCalc(r.med);
+  out.textContent = c.daily + " a day. " + (c.daysLeft > 0 ? "Runs out " + shortDate(c.runOut) + " (" + c.daysLeft + (c.daysLeft === 1 ? " day" : " days") + " left). Reminders from " + shortDate(addDays(c.runOut, -medCfg.warn)) + "."
+    : c.daysLeft === 0 ? "Runs out today." : "Out of stock since " + shortDate(c.runOut) + ".");
+}
+function saveMed() {
+  var r = readMed();
+  if (r.error) { $("f-m-err").textContent = r.error; $("f-m-err").hidden = false; return; }
+  if (medEditing) meds = meds.map(function (x) { return x.id === medEditing.id ? r.med : x; }); else meds.push(r.med);
+  medChanged++; changed = true; medEditing = null; $("sheet-med").hidden = true; refresh();
+}
+function removeMed() {
+  if (!medEditing || !confirm("Remove " + medEditing.name + " and its restock reminders?")) return;
+  meds = meds.filter(function (x) { return x.id !== medEditing.id; });
+  medChanged++; changed = true; medEditing = null; $("sheet-med").hidden = true; refresh();
+}
+function openMedCfg() { $("f-c-am").value = medCfg.am; $("f-c-pm").value = medCfg.pm; $("f-c-warn").value = medCfg.warn; $("sheet-medcfg").hidden = false; }
+function saveMedCfg() {
+  var am = $("f-c-am").value, pm = $("f-c-pm").value, w = Number($("f-c-warn").value);
+  if (!am || !pm) return;
+  if (!(Number.isInteger(w) && w >= 1 && w <= 30)) w = MED_DEFAULTS.warn;
+  if (am !== medCfg.am || pm !== medCfg.pm || w !== medCfg.warn) { medCfg = Object.assign({}, medCfg, { am: am, pm: pm, warn: w }); medChanged++; changed = true; }
+  $("sheet-medcfg").hidden = true; refresh();
 }
 
 /* ---- detail ---- */
@@ -582,6 +757,12 @@ $("edit-cancel").addEventListener("click", function () { $("sheet-edit").hidden 
 $("edit-save").addEventListener("click", saveEditor);
 $("view-close").addEventListener("click", function () { $("sheet-view").hidden = true; });
 $("removed-ok").addEventListener("click", function () { $("sheet-removed").hidden = true; });
+$("med-cancel").addEventListener("click", function () { $("sheet-med").hidden = true; });
+$("med-save").addEventListener("click", saveMed);
+$("med-del").addEventListener("click", removeMed);
+["f-m-name","f-m-dose","f-m-perday","f-m-stock","f-m-date"].forEach(function (id) { $(id).addEventListener("input", medPreview); });
+$("medcfg-cancel").addEventListener("click", function () { $("sheet-medcfg").hidden = true; });
+$("medcfg-save").addEventListener("click", saveMedCfg);
 ["btn-send", "btn-pause", "btn-resume"].forEach(function (id) {
   $(id).addEventListener("click", function (ev) {
     if (locked) { ev.preventDefault(); return; }
@@ -593,7 +774,7 @@ $("removed-ok").addEventListener("click", function () { $("sheet-removed").hidde
 /* App mode: what was just sent is now the saved list (the same thing the shortcut stores). */
 function commitSent(id) {
   entries = entries.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; delete c.skip; return c; });
-  dels = []; removedN = 0; changed = false;
+  dels = []; removedN = 0; changed = false; medBase = medLinesFor(meds, medCfg).today; medChanged = 0;
   if (id === "btn-pause") pausedN = -1;
   if (id === "btn-resume") pausedN = 0;
   saveLocal(); refresh();
