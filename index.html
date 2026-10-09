@@ -176,10 +176,7 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
   <div class="in">
     <div class="bar"><button class="btn ghost" id="med-cancel" type="button">Cancel</button><h2 id="med-title">New medicine</h2><button class="btn ghost" id="med-save" type="button">Add</button></div>
     <div class="field"><label for="f-m-name">Medicine</label><input id="f-m-name" type="text" maxlength="60" placeholder="Metformin 500 mg" autocomplete="off"></div>
-    <div class="pair">
-      <div class="field"><label for="f-m-dose">How much each time</label><input id="f-m-dose" type="number" min="0.25" step="0.25" value="1" inputmode="decimal"></div>
-      <div class="field"><label for="f-m-perday">Times a day</label><input id="f-m-perday" type="number" min="1" max="12" value="2" inputmode="numeric"></div>
-    </div>
+    <div class="field"><label for="f-m-daily">Tablets a day in total (for example 1.5 for half in the morning and one at night)</label><input id="f-m-daily" type="number" min="0.25" max="20" step="0.25" value="1" inputmode="decimal"></div>
     <div class="pair">
       <div class="field"><label for="f-m-stock">In stock (tablets, doses)</label><input id="f-m-stock" type="number" min="0" step="1" inputmode="numeric"></div>
       <div class="field"><label for="f-m-date">Counted on</label><input id="f-m-date" type="date"></div>
@@ -295,8 +292,9 @@ function dayDiff(a, b) { return Math.round((new Date(b + "T12:00:00") - new Date
 function shortDate(iso) { var p = iso.split("-"); return MON3[Number(p[1]) - 1] + " " + Number(p[2]); }
 /* The stock is taken as counted before that day's first dose, so the day it was counted on is a
    full day of use. runOut = the first day without a full day's supply; daysLeft counts from today. */
+function medDaily(m) { return m.daily != null ? Number(m.daily) : Number(m.dose) * Number(m.perDay); }
 function medCalc(m, today) {
-  var daily = Number(m.dose) * Number(m.perDay);
+  var daily = medDaily(m);
   if (!(daily > 0) || !m.countedOn || !(Number(m.stock) >= 0)) return null;
   var full = Math.floor(Number(m.stock) / daily), runOut = addDays(m.countedOn, full);
   var left = full - dayDiff(m.countedOn, today || todayISO());
@@ -549,7 +547,7 @@ function renderMeds() {
     var big = el("div", "time", !c ? "?" : c.daysLeft > 0 ? c.daysLeft + (c.daysLeft === 1 ? " day" : " days") : "Out");
     big.append(el("small", "", !c ? "set the dose and stock" : c.daysLeft > 0 ? "left · runs out " + shortDate(c.runOut) : c.daysLeft === 0 ? "runs out today" : "since " + shortDate(c.runOut)));
     b.append(big, el("span", "pill " + (c ? c.status : "builtin"), c ? MED_PILL[c.status] : "Incomplete"), el("div", "title", m.name),
-             el("div", "when", m.dose + " × " + m.perDay + " a day · " + m.stock + " in stock on " + shortDate(m.countedOn) + (m.notes ? " · " + m.notes : "")));
+             el("div", "when", medDaily(m) + " a day · " + m.stock + " in stock on " + shortDate(m.countedOn) + (m.notes ? " · " + m.notes : "")));
     b.addEventListener("click", function () { openMed(m); }); rows.append(b);
     if (c && c.status === "low") warn.push(m.name + " runs out " + (c.daysLeft === 1 ? "tomorrow" : "in " + c.daysLeft + " days") + " (" + shortDate(c.runOut) + ").");
     if (c && c.status === "out") warn.push(m.name + (c.daysLeft === 0 ? " runs out today." : " has been out of stock since " + shortDate(c.runOut) + "."));
@@ -565,20 +563,19 @@ var medEditing = null;
 function openMed(m) {
   medEditing = m || null;
   $("med-title").textContent = m ? "Edit medicine" : "New medicine"; $("med-save").textContent = m ? "Save" : "Add";
-  $("f-m-name").value = m ? m.name : ""; $("f-m-dose").value = m ? m.dose : 1; $("f-m-perday").value = m ? m.perDay : 2;
+  $("f-m-name").value = m ? m.name : ""; $("f-m-daily").value = m ? medDaily(m) : 1;
   $("f-m-stock").value = m ? m.stock : ""; $("f-m-date").value = m ? m.countedOn : todayISO(); $("f-m-date").max = todayISO();
   $("f-m-notes").value = m && m.notes ? m.notes : "";
   $("med-del").hidden = !m; $("f-m-err").hidden = true; medPreview(); $("sheet-med").hidden = false;
 }
 function readMed() {
-  var name = clean($("f-m-name").value), dose = Number($("f-m-dose").value), perDay = Number($("f-m-perday").value), stock = Number($("f-m-stock").value), date = $("f-m-date").value;
+  var name = clean($("f-m-name").value), daily = Number($("f-m-daily").value), stock = Number($("f-m-stock").value), date = $("f-m-date").value;
   if (!name) return { error: "Give the medicine a name." };
-  if (!(dose > 0)) return { error: "Enter how much you take each time, for example 1 or 0.5." };
-  if (!(Number.isInteger(perDay) && perDay >= 1 && perDay <= 12)) return { error: "Enter how many times a day, from 1 to 12." };
+  if (!(daily > 0 && daily <= 20)) return { error: "Enter how many tablets you take in a day in total, for example 1, 0.5 or 1.5." };
   if ($("f-m-stock").value === "" || !(stock >= 0)) return { error: "Enter how many you have in stock (0 if none)." };
   if (!date || date > todayISO()) return { error: "Pick the day you counted the stock (today or earlier)." };
   return { med: { id: medEditing ? medEditing.id : "m" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36),
-                  name: name, dose: dose, perDay: perDay, stock: stock, countedOn: date, notes: clean($("f-m-notes").value) } };
+                  name: name, daily: daily, stock: stock, countedOn: date, notes: clean($("f-m-notes").value) } };
 }
 function medPreview() {
   var r = readMed(), out = $("f-m-preview"); $("f-m-err").hidden = true;
@@ -760,7 +757,7 @@ $("removed-ok").addEventListener("click", function () { $("sheet-removed").hidde
 $("med-cancel").addEventListener("click", function () { $("sheet-med").hidden = true; });
 $("med-save").addEventListener("click", saveMed);
 $("med-del").addEventListener("click", removeMed);
-["f-m-name","f-m-dose","f-m-perday","f-m-stock","f-m-date"].forEach(function (id) { $(id).addEventListener("input", medPreview); });
+["f-m-name","f-m-daily","f-m-stock","f-m-date"].forEach(function (id) { $(id).addEventListener("input", medPreview); });
 $("medcfg-cancel").addEventListener("click", function () { $("sheet-medcfg").hidden = true; });
 $("medcfg-save").addEventListener("click", saveMedCfg);
 ["btn-send", "btn-pause", "btn-resume"].forEach(function (id) {
