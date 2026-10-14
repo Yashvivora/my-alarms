@@ -53,7 +53,7 @@ h2.sec { margin: 26px 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 
 .pill { grid-row: 1 / span 3; grid-column: 2; font-size: 12px; font-weight: 600; border-radius: 99px; padding: 4px 10px;
   border: 1px solid currentColor; white-space: nowrap }
 .pill.live { color: var(--ok) } .pill.pending { color: var(--wait) } .pill.builtin { color: var(--muted) }
-.pill.ok { color: var(--ok) } .pill.low { color: var(--wait) } .pill.out { color: var(--danger) }
+.pill.paused { color: var(--wait) } .pill.ok { color: var(--ok) } .pill.low { color: var(--wait) } .pill.out { color: var(--danger) }
 .row .pill.out { background: var(--danger); color: var(--on-accent); border-color: var(--danger) }
 .sechead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 8px }
 .sechead h2.sec { margin: 0 0 8px }
@@ -183,7 +183,7 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
     </div>
     <div class="field"><label for="f-m-notes">Prescription notes</label><textarea id="f-m-notes" maxlength="200" placeholder="1 tablet after breakfast and dinner"></textarea></div>
     <p class="preview" id="f-m-preview"></p>
-    <p class="preview">Count the stock before the first dose of that day. Restock reminders ring twice a day from one week before it runs out (change the times under Medicines).</p>
+    <p class="preview">Count the stock before the first dose of that day. Restock reminders ring twice a day from one week before it runs out until you enter the new stock (change the times under Medicines). They always ring, even when alarms are paused.</p>
     <div class="err" id="f-m-err" hidden></div>
     <div><button class="btn danger" id="med-del" type="button" hidden>Remove medicine</button></div>
   </div>
@@ -196,8 +196,7 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
       <div class="field"><label for="f-c-am">Morning</label><input id="f-c-am" type="time" value="09:00"></div>
       <div class="field"><label for="f-c-pm">Night</label><input id="f-c-pm" type="time" value="21:00"></div>
     </div>
-    <div class="field"><label for="f-c-warn">Start how many days before it runs out</label><input id="f-c-warn" type="number" min="1" max="30" value="7" inputmode="numeric"></div>
-    <p class="preview">Two reminders a day, from that many days before a medicine runs out until a week after, or until you update its stock.</p>
+    <p class="preview">Two reminders a day, from 7 days before a medicine runs out until you enter its new stock. They are repeating alarms in Clock and always ring, even when alarms are paused.</p>
   </div>
 </div>
 
@@ -207,6 +206,7 @@ ul.plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column;
     <div class="field"><span class="lab">Rings at</span><div class="big" id="view-times"></div></div>
     <div class="field"><span class="lab">Repeat</span><div class="big" id="view-when"></div></div>
     <div class="field"><span class="lab">Status</span><div id="view-status"></div></div>
+    <div class="field" id="view-pause"></div>
     <div id="view-actions"></div>
   </div>
 </div>
@@ -286,7 +286,8 @@ function isDated(e) { return e.repeat === "monthly" || e.repeat === "yearly" || 
 
 /* ---- medicines: stock arithmetic (pure) ---- */
 var MON3 = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-var MED_DEFAULTS = { am: "09:00", pm: "21:00", warn: 7, after: 7 };
+/* warn is fixed at 7: the shortcut switches a reminder on when the stock runs out within 7 days (version 6) */
+var MED_DEFAULTS = { am: "09:00", pm: "21:00", warn: 7 };
 function addDays(iso, n) { var d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
 function dayDiff(a, b) { return Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5); }
 function shortDate(iso) { var p = iso.split("-"); return MON3[Number(p[1]) - 1] + " " + Number(p[2]); }
@@ -300,30 +301,21 @@ function medCalc(m, today) {
   var left = full - dayDiff(m.countedOn, today || todayISO());
   return { daily: daily, runOut: runOut, daysLeft: left, status: left > medCfg.warn ? "ok" : left > 0 ? "low" : "out" };
 }
-function medLabel(name, runOut, iso) {
-  var n = dayDiff(iso, runOut);
-  if (n > 0) return "Restock " + name + ": " + n + (n === 1 ? " day" : " days") + " left, runs out " + shortDate(runOut);
-  if (n === 0) return "Restock " + name + ": runs out today";
-  return "Restock " + name + ": out of stock since " + shortDate(runOut);
-}
-/* Reminder lines for every medicine, twice a day from `warn` days before it runs out until `after`
-   days after. "D<yyyyMMdd>|HH:MM|label" lines go to the dated list (the nightly shortcut makes the
-   alarms on the day); "O|HH:MM|label" lines are today's, created straight away when saved. */
+function longDate(iso) { return shortDate(iso) + ", " + iso.slice(0, 4); }
+/* Version 6: one repeating Clock alarm per reminder time, "Restock <name>: runs out Oct 15, 2026".
+   The shortcuts switch it on from 7 days before that date and off while the stock is in the green
+   zone, reading the date from the label, so no file and no nightly run is needed for it to ring.
+   It keeps ringing every day until the new stock is entered here and saved. */
+function medLabel(name, runOut) { return "Restock " + name + ": runs out " + longDate(runOut); }
 function medLinesFor(list, cfg) {
-  var today = todayISO(), dated = [], now = [];
+  var out = [];
+  if (!v6) return out;      /* older shortcuts cannot switch these off in the green zone: no reminders until they are updated */
   list.forEach(function (m) {
-    var c = medCalc(m, today); if (!c) return;
-    var name = clean(m.name);
-    for (var k = -cfg.warn; k <= cfg.after; k++) {
-      var iso = addDays(c.runOut, k); if (iso < today) continue;
-      var label = clean(medLabel(name, c.runOut, iso));
-      [cfg.am, cfg.pm].forEach(function (t) {
-        if (iso === today) now.push("O|" + t + "|" + label);
-        else dated.push("D" + iso.replace(/-/g, "") + "|" + t + "|" + label);
-      });
-    }
+    var c = medCalc(m); if (!c) return;
+    var label = clean(medLabel(clean(m.name), c.runOut));
+    [cfg.am, cfg.pm].forEach(function (t) { var l = "A|" + t + "|" + label + "|" + DAYS.join(","); if (out.indexOf(l) < 0) out.push(l); });
   });
-  return { dated: dated, today: now };
+  return out;
 }
 function datedLines(list) {
   var out = [];
@@ -332,7 +324,7 @@ function datedLines(list) {
     var key = e.repeat === "monthly" ? "M" + pad(e.dom) : e.repeat === "yearly" ? "Y" + pad(e.month) + pad(e.day) : "D" + e.date.replace(/-/g, "");
     e.times.forEach(function (t) { out.push(key + "|" + t + "|" + clean(e.title)); });
   });
-  return out.concat(medLinesFor(meds, medCfg).dated).sort();
+  return out.sort();
 }
 function clockLines(list) {
   var out = [];
@@ -347,16 +339,16 @@ function clockLines(list) {
     var days = e.repeat === "daily" ? DAYS : e.repeat === "weekly" ? DAYS.filter(function (d) { return e.days.indexOf(d) >= 0; }) : null;
     e.times.forEach(function (t) { if (skip.indexOf(t) >= 0) return; out.push(days ? "A|" + t + "|" + clean(e.title) + "|" + days.join(",") : "O|" + t + "|" + clean(e.title)); });
   });
-  /* today's restock reminders not yet in Clock (medBase = the ones made from the saved list) */
-  medLinesFor(meds, medCfg).today.forEach(function (l) { if (medBase.indexOf(l) < 0 && toMin(l.split("|")[1]) > nowMin()) out.push(l); });
+  /* restock reminders not yet in Clock (medBase = the ones made from the saved list) */
+  medLinesFor(meds, medCfg).forEach(function (l) { if (medBase.indexOf(l) < 0) out.push(l); });
   return out;
 }
 /* "X|Label|H|M|" lines: Clock alarms for the shortcut to delete (hours and minutes without
    leading zeros, as Clock reports them). If another kept entry has the same title and time,
    its alarm is made again, since the delete removes every alarm with that title and time. */
 function deleteLines(list) {
-  var out = [], again = [], medNow = medLinesFor(meds, medCfg).today;
-  medBase.forEach(function (l) {        /* today's restock alarms that a stock change made wrong */
+  var out = [], again = [], medNow = medLinesFor(meds, medCfg);
+  medBase.forEach(function (l) {        /* restock alarms that a stock or time change made wrong */
     if (medNow.indexOf(l) >= 0) return;
     var p = l.split("|"), t = p[1].split(":").map(Number), x = "X|" + p[2] + "|" + t[0] + "|" + t[1] + "|";
     if (out.indexOf(x) < 0) out.push(x);
@@ -376,7 +368,7 @@ function deleteLines(list) {
 function buildPayload(list, extra) {
   var saved = list.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; delete c.skip; return c; });
   return ["GALARM1"].concat(extra || [], deleteLines(list), clockLines(list), [fullList ? "GALARM-DATED-BEGIN-V2" : "GALARM-DATED-BEGIN"], datedLines(list), ["GALARM-DATED-END", "GALARM-STATE-BEGIN",
-    JSON.stringify({ v: 1, entries: saved, medicines: meds, medCfg: medCfg }), "GALARM-STATE-END"]).join("\n");
+    JSON.stringify({ v: 1, entries: saved, medicines: meds, medCfg: medCfg, medFmt: 2 }), "GALARM-STATE-END"]).join("\n");
 }
 function parseSaved(raw) {
   var m = /GALARM-STATE-BEGIN\s*([\s\S]*?)\s*GALARM-STATE-END/.exec(raw || "");
@@ -393,12 +385,64 @@ var entries = [], changed = false, broken = false, locked = false, loaded = fals
    birthdays and monthly ones that used to be fixed inside the nightly shortcut are editable. */
 var fullList = false;
 /* Version 4 of the list shortcut can delete Clock alarms and pause / resume them all. */
-var v4 = false, pausedN = 0, dels = [], removedN = 0;
+var v4 = false, v6 = false, pausedN = 0, dels = [], removedN = 0;
+/* Version 6 pauses: one entry per paused Clock alarm {title, h, m, rep, idx}, read from the shortcut's
+   paused file ("P|Label|H|M|Yes|<minute index>"). A pause lasts 10 hours; only alarms that would ring
+   in that time are turned off, and medicine alarms never are. idx = minutes since the start of 2026,
+   counted as the shortcut does (year * 525600 + day of year * 1440 + minutes of the day). */
+var pauses = [], PAUSE_MIN = 600;
+function nowIdx(d) {
+  d = d || new Date();
+  var doy = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(d.getFullYear(), 0, 1)) / 864e5) + 1;
+  return (d.getFullYear() - 2026) * 525600 + doy * 1440 + d.getHours() * 60 + d.getMinutes();
+}
+function idxTime(idx) { var d = new Date(new Date(2026, 0, 1).getTime() + (idx - 1440) * 60000); return fmt12(pad(d.getHours()) + ":" + pad(d.getMinutes())); }
+function parsePauses(text) {
+  var out = [];
+  String(text || "").split("\n").forEach(function (l) {
+    var m = /^P\|(.*)\|(\d+)\|(\d+)\|(Yes|No)(?:\|(\d+))?\s*$/.exec(l);
+    if (m) out.push({ title: m[1], h: Number(m[2]), m: Number(m[3]), rep: m[4], idx: m[5] ? Number(m[5]) : null });
+  });
+  return out;
+}
+function isCritical(title) { return /medicine/i.test(title) || /^Restock /.test(title); }
+function entryPauses(e) {
+  var t = clean(e.title), times = clockTimes(e);
+  return pauses.filter(function (p) { return p.title === t && times.indexOf(fromMin(p.h * 60 + p.m)) >= 0; });
+}
+function pauseEnd(list) {
+  var ends = list.filter(function (p) { return p.idx != null; }).map(function (p) { return p.idx + PAUSE_MIN; });
+  return ends.length ? Math.max.apply(null, ends) : null;
+}
+/* Minutes until this time of the entry next rings (Infinity if not within a week). */
+function minsUntil(e, t, now) {
+  var nm = now.getHours() * 60 + now.getMinutes();
+  for (var k = 0; k <= 7; k++) {
+    var d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + k, 12);
+    if (!appliesOn(e, d)) continue;
+    var mins = k * 1440 + toMin(t) - nm; if (mins >= 0) return mins;
+  }
+  return Infinity;
+}
+/* The Clock alarms of this entry that ring in the next 10 hours: what a pause turns off. */
+function pauseTimes(e) {
+  var now = new Date();
+  return clockTimes(e).filter(function (t) { return minsUntil(e, t, now) < PAUSE_MIN; });
+}
+function keyLine(prefix, title, t, rep) {
+  var p = t.split(":").map(Number);
+  return prefix + "|" + clean(title) + "|" + p[0] + "|" + p[1] + "|" + (rep || "");
+}
 /* Medicines (version 5): name, dose each time, times a day, stock, the date it was counted, notes.
    Kept in the saved list next to the alarms. medBase = today's restock lines as they were when
    the list was loaded (so they are not created twice, and are deleted if the stock changes). */
-var meds = [], medCfg = Object.assign({}, MED_DEFAULTS), medBase = [], medChanged = 0;
-function setMeds(list, cfg) { meds = Array.isArray(list) ? list : []; medCfg = Object.assign({}, MED_DEFAULTS, cfg || {}); medBase = medLinesFor(meds, medCfg).today; medChanged = 0; }
+var meds = [], medCfg = Object.assign({}, MED_DEFAULTS), medBase = [], medChanged = 0, medFmt = 0;
+/* medFmt 2 = the saved restock reminders are version 6 repeating alarms. A list saved before that
+   had one-time reminders, so all are made again on the next save (one "change to save"). */
+function setMeds(list, cfg, fmt) {
+  meds = Array.isArray(list) ? list : []; medCfg = Object.assign({}, MED_DEFAULTS, cfg || {}, { warn: MED_DEFAULTS.warn });
+  medFmt = fmt === 2 ? 2 : 0; medBase = medFmt === 2 ? medLinesFor(meds, medCfg) : []; medChanged = medFmt !== 2 && meds.length ? 1 : 0;
+}
 /* Home Screen app mode: the list is kept in this app's own storage on the phone (a Home Screen
    app does not share storage with Safari). It is loaded once from the shortcut through the
    clipboard; after that each Save / Pause / Resume updates it here as it is sent. */
@@ -407,14 +451,16 @@ var appMode = /[?&]app=1/.test(location.search) || navigator.standalone === true
 var STORE = "galarm-app-v1";
 function saveLocal() {
   if (!appMode) return;
-  try { localStorage.setItem(STORE, JSON.stringify({ name: SHORTCUT, v4: v4, fullList: fullList, pausedN: pausedN, entries: entries, medicines: meds, medCfg: medCfg })); } catch (err) {}
+  try { localStorage.setItem(STORE, JSON.stringify({ name: SHORTCUT, v4: v4, v6: v6, fullList: fullList, pausedN: pausedN, pauses: pauses, entries: entries, medicines: meds, medCfg: medCfg, medFmt: medFmt })); } catch (err) {}
 }
 function loadLocal() {
   var st = null;
   try { st = JSON.parse(localStorage.getItem(STORE)); } catch (err) { st = null; }
   if (!st || !Array.isArray(st.entries)) return false;
-  SHORTCUT = st.name || SHORTCUT; v4 = !!st.v4; fullList = !!st.fullList; pausedN = st.pausedN || 0; entries = st.entries; loaded = true;
-  setMeds(st.medicines, st.medCfg);
+  SHORTCUT = st.name || SHORTCUT; v4 = !!st.v4; v6 = !!st.v6; fullList = !!st.fullList; pausedN = st.pausedN || 0; entries = st.entries; loaded = true;
+  pauses = Array.isArray(st.pauses) ? st.pauses : [];
+  dropEndedPauses();
+  setMeds(st.medicines, st.medCfg, st.medFmt);
   var today = todayISO();
   entries = entries.filter(function (e) { return !(e.repeat === "once" && e.date < today); });
   return true;
@@ -455,16 +501,16 @@ function loadRaw(raw) {
   if (!/GALARM-SEED-BEGIN/.test(raw)) return false;
   broken = false; changed = false; dels = []; removedN = 0;
   var nm = /^GALARM-NAME:(.+)$/m.exec(raw); if (nm) SHORTCUT = nm[1].trim();
-  var vm = /^GALARM-V:(\d+)$/m.exec(raw); fullList = !!vm && Number(vm[1]) >= 2; v4 = !!vm && Number(vm[1]) >= 4;
+  var vm = /^GALARM-V:(\d+)$/m.exec(raw); fullList = !!vm && Number(vm[1]) >= 2; v4 = !!vm && Number(vm[1]) >= 4; v6 = !!vm && Number(vm[1]) >= 6;
   var pf = /GALARM-PAUSE-FILE-BEGIN\n([\s\S]*?)\nGALARM-PAUSE-FILE-END/.exec(raw);
-  pausedN = pf ? (pf[1].match(/^P\|/mg) || []).length : 0;
+  pauses = pf ? parsePauses(pf[1]) : []; pausedN = pauses.length;
   ringing = /^GALARM-RING$/m.test(raw);
   var m = /GALARM-SEED-BEGIN\s*([\s\S]*?)\s*GALARM-SEED-END/.exec(raw), st = null, seedMeds = [];
   try { seed = JSON.parse(m[1]); } catch (err) { return false; }
   var mm = /GALARM-MEDS-BEGIN\s*([\s\S]*?)\s*GALARM-MEDS-END/.exec(raw);
   if (mm) { try { seedMeds = JSON.parse(mm[1]); } catch (err) { seedMeds = []; } }
   try { st = parseSaved(raw.slice(m.index + m[0].length)); saved = st && st.entries; } catch (err) { broken = true; }
-  setMeds(st && Array.isArray(st.medicines) ? st.medicines : seedMeds, st && st.medCfg);
+  setMeds(st && Array.isArray(st.medicines) ? st.medicines : seedMeds, st && st.medCfg, st && st.medFmt);
   entries = saved ? unmerge(saved, seed) : seed; loaded = true;
   if (fullList) entries.forEach(function (e) { if (e.status === "builtin") e.status = "live"; });
   var today = todayISO(), before = entries.length;
@@ -509,7 +555,9 @@ function refresh() {
       var b = el("button", "row"); b.type = "button";
       var time = el("div", "time", fmt12(e.times[0]));
       if (e.times.length > 1) time.append(el("small", "", "to " + fmt12(e.times[e.times.length - 1]) + " · " + (gapText(e.times) || e.times.length + " alarms")));
-      b.append(time, el("span", "pill " + e.status, PILL[e.status] || e.status), el("div", "title", e.title), el("div", "when", describe(e)));
+      var paused = v6 && entryPauses(e).length > 0;
+      b.append(time, el("span", "pill " + (paused ? "paused" : e.status), paused ? "Paused" : PILL[e.status] || e.status), el("div", "title", e.title),
+               el("div", "when", describe(e) + (isCritical(e.title) ? " · always rings" : "")));
       b.addEventListener("click", function () { openView(e.id); }); rows.append(b);
     });
     box.append(rows);
@@ -518,9 +566,11 @@ function refresh() {
   var pending = entries.filter(function (e) { return e.status === "pending"; }).length + removedN + medChanged;
   var dirty = changed || pending > 0;
   var run = "shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT) + "&input=text&text=";
-  $("btn-pause").hidden = !v4 || pausedN > 0;
+  $("btn-pause").hidden = !v4 || (v6 ? pausedN < 0 : pausedN > 0);   /* v6: pausing all again restarts the 10 hours */
   $("paused").hidden = !v4 || pausedN === 0;
-  $("paused-n").textContent = (pausedN < 0 ? "Alarms are off" : pausedN + (pausedN === 1 ? " alarm is" : " alarms are") + " off") + " until you resume, or for 12 hours at most.";
+  var end = pauseEnd(pauses);
+  $("paused-n").textContent = (pausedN < 0 ? "Alarms are off" : pausedN + (pausedN === 1 ? " alarm is" : " alarms are") + " off")
+    + (end != null ? " until about " + idxTime(end) + " (10 hours)." : " until you resume, or for 10 hours at most.") + " Medicine alarms still ring.";
   var app = appMode ? ["GALARM-APP"] : [];
   $("btn-pause").href = run + encodeURIComponent(buildPayload(entries, app.concat(["GALARM-PAUSE"])));
   $("btn-resume").href = run + encodeURIComponent(buildPayload(entries, app.concat(["GALARM-RESUME"])));
@@ -553,7 +603,8 @@ function renderMeds() {
     if (c && c.status === "out") warn.push(m.name + (c.daysLeft === 0 ? " runs out today." : " has been out of stock since " + shortDate(c.runOut) + "."));
   });
   if (meds.length) mb.append(rows);
-  else mb.append(el("p", "preview", "Add each medicine with its dose and how many you have. The app works out when it runs out and reminds you to restock a week ahead, twice a day."));
+  if (meds.length && !v6) mb.append(el("p", "preview", "Restock reminders need the version 6 shortcuts. Replace the shortcuts from iCloud Drive > Alarm Shortcuts, then open this list again."));
+  else mb.append(el("p", "preview", "Add each medicine with its dose and how many you have. The app works out when it runs out and reminds you to restock a week ahead, twice a day, until you enter the new stock."));
   var add = el("button", "btn addrow", "+ Add medicine"); add.type = "button"; add.addEventListener("click", function () { openMed(null); }); mb.append(add);
   if (warn.length) { ma.textContent = ""; ma.append(el("b", "", "Restock soon. "), document.createTextNode(warn.join(" "))); ma.hidden = false; }
 }
@@ -595,12 +646,11 @@ function removeMed() {
   meds = meds.filter(function (x) { return x.id !== medEditing.id; });
   medChanged++; changed = true; medEditing = null; $("sheet-med").hidden = true; refresh();
 }
-function openMedCfg() { $("f-c-am").value = medCfg.am; $("f-c-pm").value = medCfg.pm; $("f-c-warn").value = medCfg.warn; $("sheet-medcfg").hidden = false; }
+function openMedCfg() { $("f-c-am").value = medCfg.am; $("f-c-pm").value = medCfg.pm; $("sheet-medcfg").hidden = false; }
 function saveMedCfg() {
-  var am = $("f-c-am").value, pm = $("f-c-pm").value, w = Number($("f-c-warn").value);
+  var am = $("f-c-am").value, pm = $("f-c-pm").value;
   if (!am || !pm) return;
-  if (!(Number.isInteger(w) && w >= 1 && w <= 30)) w = MED_DEFAULTS.warn;
-  if (am !== medCfg.am || pm !== medCfg.pm || w !== medCfg.warn) { medCfg = Object.assign({}, medCfg, { am: am, pm: pm, warn: w }); medChanged++; changed = true; }
+  if (am !== medCfg.am || pm !== medCfg.pm) { medCfg = Object.assign({}, medCfg, { am: am, pm: pm }); medChanged++; changed = true; }
   $("sheet-medcfg").hidden = true; refresh();
 }
 
@@ -614,6 +664,7 @@ function openView(id) {
   $("view-status").textContent = e.status === "builtin" ? "Built into the nightly shortcut. It cannot be changed here."
     : e.status === "pending" ? "Not saved yet. Tap Save to Clock on the main screen."
     : isDated(e) ? "Scheduled. The nightly shortcut adds it to Clock on the day." : "In the Clock app.";
+  renderViewPause(e);
   var act = $("view-actions"); act.textContent = "";
   if (e.status !== "builtin") {
     var ed = el("button", "btn", "Edit alarm"); ed.type = "button"; ed.addEventListener("click", function () { $("sheet-view").hidden = true; openEditor(e); });
@@ -621,6 +672,35 @@ function openView(id) {
     act.append(ed, document.createTextNode(" "), b);
   }
   $("sheet-view").hidden = false;
+}
+/* One-alarm pause (version 6): turns off this alarm's times that ring in the next 10 hours; the
+   shortcuts turn them back on 10 hours later. Medicine alarms cannot be paused. */
+function renderViewPause(e) {
+  var box = $("view-pause"); box.textContent = ""; box.hidden = true;
+  if (!v6 || e.status !== "live" || !clockTimes(e).length) return;
+  box.hidden = false;
+  if (isCritical(e.title)) { box.append(el("p", "preview", "Medicine alarm: it always rings, even when alarms are paused.")); return; }
+  var run = "shortcuts://run-shortcut?name=" + encodeURIComponent(SHORTCUT) + "&input=text&text=", app = appMode ? ["GALARM-APP"] : [];
+  var mine = entryPauses(e);
+  if (mine.length) {
+    var end = pauseEnd(mine);
+    box.append(el("p", "preview", "Paused" + (end != null ? " until about " + idxTime(end) : "") + ". It comes back on by itself 10 hours after it was paused."));
+    var r = el("a", "btn primary", "Resume now"); r.href = run + encodeURIComponent(buildPayload(entries, app.concat(["GALARM-RESUME-ONE"],
+      mine.map(function (p) { return keyLine("UP", p.title, fromMin(p.h * 60 + p.m)); }))));
+    wireSend(r, function () { pauses = pauses.filter(function (p) { return mine.indexOf(p) < 0; }); pausedN = pauses.length; });
+    box.append(r); return;
+  }
+  var times = pauseTimes(e);
+  if (!times.length) { box.append(el("p", "preview", "Pause for 10 hours: it does not ring in the next 10 hours, so there is nothing to pause.")); return; }
+  var rep = e.repeat === "daily" || e.repeat === "weekly" ? "Yes" : "No";
+  var a = el("a", "btn", "Pause for 10 hours"); a.href = run + encodeURIComponent(buildPayload(entries, app.concat(["GALARM-PAUSE-ONE"],
+    times.map(function (t) { return keyLine("SP", e.title, t, rep); }))));
+  wireSend(a, function () {
+    var idx = nowIdx();
+    times.forEach(function (t) { var p = t.split(":").map(Number); pauses.push({ title: clean(e.title), h: p[0], m: p[1], rep: rep, idx: idx }); });
+    pausedN = pauses.length;
+  });
+  box.append(a, el("p", "preview", "Skips " + times.map(fmt12).join(", ") + ". It comes back on by itself after 10 hours."));
 }
 function removeViewing() {
   var e = viewing; if (!e) return;
@@ -760,20 +840,40 @@ $("med-del").addEventListener("click", removeMed);
 ["f-m-name","f-m-daily","f-m-stock","f-m-date"].forEach(function (id) { $(id).addEventListener("input", medPreview); });
 $("medcfg-cancel").addEventListener("click", function () { $("sheet-medcfg").hidden = true; });
 $("medcfg-save").addEventListener("click", saveMedCfg);
-["btn-send", "btn-pause", "btn-resume"].forEach(function (id) {
-  $(id).addEventListener("click", function (ev) {
+/* Every link that runs the shortcut. In app mode, onCommit updates the pause list the way the
+   shortcut will, then the sent changes become the saved list. */
+function wireSend(a, onCommit) {
+  a.addEventListener("click", function (ev) {
     if (locked) { ev.preventDefault(); return; }
-    if (appMode) { setTimeout(function () { commitSent(id); }, 300); $("sent-app").hidden = false; $("sent-web").hidden = true; }
+    if (appMode) { setTimeout(function () { if (onCommit) onCommit(); commitSent(); }, 300); $("sent-app").hidden = false; $("sent-web").hidden = true; }
     else locked = true;
+    $("sheet-view").hidden = true;
     setTimeout(function () { $("sheet-sent").hidden = false; }, 600);
   });
+}
+wireSend($("btn-send"));
+wireSend($("btn-pause"), function () {
+  if (!v6) { pausedN = -1; return; }
+  var idx = nowIdx();
+  pauses.forEach(function (p) { p.idx = idx; });          /* pausing again restarts every pause */
+  entries.forEach(function (e) {
+    if (e.status !== "live" || isCritical(e.title) || entryPauses(e).length) return;
+    var rep = e.repeat === "daily" || e.repeat === "weekly" ? "Yes" : "No";
+    pauseTimes(e).forEach(function (t) { var p = t.split(":").map(Number); pauses.push({ title: clean(e.title), h: p[0], m: p[1], rep: rep, idx: idx }); });
+  });
+  pausedN = pauses.length || -1;
 });
+wireSend($("btn-resume"), function () { pauses = []; pausedN = 0; });
+/* App mode: pauses older than 10 hours have been ended by the shortcuts (any alarm ringing runs them). */
+function dropEndedPauses() {
+  var now = nowIdx();
+  pauses = pauses.filter(function (p) { return p.idx != null && now - p.idx < PAUSE_MIN; });
+  if (v6) pausedN = pauses.length;
+}
 /* App mode: what was just sent is now the saved list (the same thing the shortcut stores). */
-function commitSent(id) {
+function commitSent() {
   entries = entries.map(function (e) { var c = Object.assign({}, e); if (c.status === "pending") c.status = "live"; delete c.skip; return c; });
-  dels = []; removedN = 0; changed = false; medBase = medLinesFor(meds, medCfg).today; medChanged = 0;
-  if (id === "btn-pause") pausedN = -1;
-  if (id === "btn-resume") pausedN = 0;
+  dels = []; removedN = 0; changed = false; medFmt = 2; medBase = medLinesFor(meds, medCfg); medChanged = 0;
   saveLocal(); refresh();
 }
 $("sent-ok").addEventListener("click", function () { $("sheet-sent").hidden = true; });
@@ -801,7 +901,7 @@ function appliesOn(e, d) {
   if (e.repeat === "weekly") return (e.days || []).indexOf(DAYS[(d.getDay() + 6) % 7]) >= 0;
   if (e.repeat === "monthly") return e.dom === d.getDate();
   if (e.repeat === "yearly") return e.month === d.getMonth() + 1 && e.day === d.getDate();
-  return e.date === todayISO();
+  return e.date === d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
 }
 /* Which alarm is ringing: one due this minute (or just before). Failing that, the latest one in
    the past hour, which is a snoozed alarm ringing again. */
